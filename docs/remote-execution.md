@@ -194,6 +194,8 @@ Restart both ComfyUI processes. `CUTLERY_REMOTE_CLIP_BASE_URL` is explicit opera
 
 The client role remains usable with `CUTLERY_REMOTE_CLIP_SERVER_ENABLED=0`. The `remote` mode makes `/cutlery/remote/clip/choices` read the serving host's local inventory instead of trying to call another peer; the server-enable flag remains the actual authorization boundary for inbound execution.
 
+Each accepted Remote CLIP encode is queued as a normal ComfyUI prompt on the serving peer, titled **Remote CLIP Text Encode**. It therefore appears in that peer's queue and job history; the authenticated route waits for the history result and returns the serialized CONDITIONING to the calling node. A timed-out or cancelled handler cancels only its own queued or running prompt.
+
 ## Remote CLIP routes and storage
 
 The inbound role controlled by `CUTLERY_REMOTE_CLIP_SERVER_ENABLED` covers:
