@@ -1,0 +1,1404 @@
+openapi: 3.1.0
+info:
+  title: Cutlery Remote API
+  version: 1.3.0
+  description: |
+    Authenticated Cutlery-to-Cutlery discovery and remote-group execution routes,
+    plus local allowlisted browser proxies for machine-specific ComfyUI node
+    definitions and read-only widget registries. Remote service routes use a
+    shared bearer token. Browser proxies resolve only targets registered in
+    `CUTLERY_DATA_DIR/config.json`, including explicitly registered loopback tunnel
+    origins, and never accept an arbitrary network destination.
+servers:
+  - url: http://127.0.0.1:8188
+tags:
+  - name: Remote discovery
+    description: Capability and target-specific ComfyUI node-definition discovery.
+  - name: Remote registries
+    description: Allowlisted browser access to target-owned Cutlery widget registries.
+  - name: Model inventory
+    description: Canonical ComfyUI model-folder inventory and exact-name resolution.
+  - name: Blob cache
+    description: Content-addressed payload existence and upload operations.
+  - name: Remote execution
+    description: Synchronous compiled-group execution and prompt-specific cancellation.
+security:
+  - bearerAuth: []
+paths:
+  /cutlery/remote/capabilities:
+    get:
+      tags: [Remote discovery]
+      summary: Return Cutlery remote protocol capabilities
+      operationId: getCutleryRemoteCapabilities
+      description: |
+        Returns protocol, serializer, authentication, and feature support for this
+        Cutlery-enabled ComfyUI instance. Smart remote combos require
+        `features.remote_node_definitions_v1` to be true. Remote group execution
+        also requires `features.prompt_specific_interrupt` and every serializer
+        implied by the compiled boundary ports.
+      responses:
+        "200":
+          description: Supported protocol, serializers, authentication mode, and features.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CapabilitiesResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/RemoteServerDisabled"
+        "503":
+          $ref: "#/components/responses/TokenNotConfigured"
+      x-agent-notes:
+        useWhen:
+          - Preflighting a configured remote target before requesting node definitions or running a group.
+        doNotUseWhen:
+          - Do not infer node classes or combo values from capabilities; call the node-definitions endpoint.
+        workflow:
+          - Require `remote_node_definitions_v1` before applying target-specific combo choices.
+          - Before group execution, require `prompt_specific_interrupt` and the serializers implied by the actual input/output ports.
+
+  /cutlery/remote/node-definitions:
+    post:
+      tags: [Remote discovery]
+      summary: Return normalized definitions for installed node classes
+      operationId: postCutleryRemoteNodeDefinitions
+      description: |
+        Authenticated service-to-service endpoint. It evaluates the requested node
+        classes on this ComfyUI instance using V3 node information when available
+        and `INPUT_TYPES()` otherwise. Concrete combo options preserve scalar JSON
+        types. Missing classes, dynamic inputs, malformed definitions, and
+        per-class failures are returned as node records rather than aborting the
+        whole batch. A successful HTTP response has root `ok: true` because the
+        request produced a normalized envelope; callers must inspect `complete`
+        and each node's `available` and `compatible` fields before queueing.
+        The `cache` contract reports whether declared prompt inputs fully
+        determine a node's change identity. Compilers may select sender-side
+        group caching only when every node explicitly reports
+        `cache.declared_inputs_only: true`; a missing or false value must keep
+        cache evaluation on the receiving peer.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NodeDefinitionsRequest"
+            examples:
+              loaders:
+                value:
+                  class_types:
+                    - CLIPLoader
+                    - CheckpointLoaderSimple
+                    - KSampler
+      responses:
+        "200":
+          description: Normalized definitions for every requested class type.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodeDefinitionsResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/RemoteServerDisabled"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/TokenNotConfigured"
+      x-agent-notes:
+        useWhen:
+          - A trusted Cutlery peer needs the actual combo registries and structural node definitions installed on this machine.
+          - Preflighting that all classes in a compiled remote group exist on the execution target.
+        doNotUseWhen:
+          - Browser code should call `/cutlery/remote/proxy/node-definitions` so it never handles the shared token.
+          - Do not use the model inventory route as a substitute for sampler, scheduler, provider, device, file, or custom-node combos.
+        workflow:
+          - Batch distinct class types in one request.
+          - Treat root `ok` as envelope success, not proof that every requested class is usable.
+          - "Require `complete: true` and per-node `compatible: true` for compiled-group preflight."
+          - Treat unavailable, dynamic, malformed, or errored inputs as explicit preflight state.
+
+  /cutlery/remote/proxy/node-definitions:
+    post:
+      tags: [Remote discovery]
+      summary: Proxy node-definition discovery to an allowlisted target
+      operationId: postCutleryRemoteProxyNodeDefinitions
+      description: |
+        Local browser-facing endpoint. `target` is a key in
+        `CUTLERY_DATA_DIR/config.json` under `remote_targets`, or an origin such as
+        `127.0.0.1:8189` that exactly matches a registered target. The local
+        backend resolves the trusted base URL, adds the shared bearer token, calls the remote
+        `/cutlery/remote/node-definitions` route, and returns its normalized
+        response. Every unregistered origin, including other loopback ports, is
+        rejected before any outbound request.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProxyNodeDefinitionsRequest"
+            example:
+              target: renderhost
+              class_types:
+                - CLIPLoader
+                - KSampler
+      responses:
+        "200":
+          description: Target-specific normalized node definitions.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodeDefinitionsResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/TargetNotTrusted"
+        "502":
+          $ref: "#/components/responses/RemoteUnavailable"
+        "503":
+          $ref: "#/components/responses/TokenNotConfigured"
+      x-agent-notes:
+        useWhen:
+          - The current ComfyUI frontend is refreshing combo widgets for nodes inside a configured remote group.
+        doNotUseWhen:
+          - Do not send an unregistered URL/IP address, authorization header, or token in this request.
+          - Service-to-service callers that already hold the shared token should call the direct node-definitions endpoint.
+        sideEffects:
+          - Performs a read-only outbound request to the configured target.
+        workflow:
+          - Resolve group membership, deduplicate class types, then batch one request per target.
+          - Discard stale responses when the group target or membership changes.
+
+  /cutlery/remote/proxy/registry:
+    post:
+      tags: [Remote registries]
+      summary: Run one allowlisted widget-registry operation on a trusted target
+      operationId: postCutleryRemoteProxyRegistry
+      description: |
+        Local browser-facing endpoint for Cutlery registries whose valid values
+        depend on current node inputs and therefore cannot be represented by a
+        class-only `INPUT_TYPES()` response. The caller supplies a fixed registry
+        id, never an HTTP method or path. The local backend validates the
+        registry-specific payload, resolves a configured target or exact
+        configured tunnel origin, adds the shared token, and calls the corresponding Cutlery route
+        on that target. Browser-supplied upstream URLs and API keys are rejected.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProxyRegistryRequest"
+            example:
+              target: renderhost
+              registry: remote_clip.choices
+              payload: {}
+      responses:
+        "200":
+          description: The allowlisted registry operation completed on the target.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProxyRegistryResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/TargetNotTrusted"
+        "404":
+          $ref: "#/components/responses/RemoteUnavailable"
+        "422":
+          $ref: "#/components/responses/BadRequest"
+        "502":
+          $ref: "#/components/responses/RemoteUnavailable"
+        "503":
+          $ref: "#/components/responses/TokenNotConfigured"
+      x-agent-notes:
+        useWhen:
+          - A Cutlery Remote CLIP node needs the text-encoder, CLIP-type, or VAE choices owned by the selected execution target.
+        doNotUseWhen:
+          - Do not accept an upstream URL, API key, HTTP method, path, authorization header, or token from the browser.
+          - Use node definitions for ordinary concrete ComfyUI combos such as checkpoint, CLIP, VAE, sampler, scheduler, device, and file registries.
+        sideEffects:
+          - All registry ids are read-only discovery operations.
+        workflow:
+          - Use `remote_clip.choices` for Cutlery Remote CLIP encoder, CLIP-type, and VAE widgets.
+          - Key and discard responses by node instance as well as target.
+
+  /cutlery/remote/models:
+    get:
+      tags: [Model inventory]
+      summary: List model names for a ComfyUI model category
+      operationId: getCutleryRemoteModels
+      description: |
+        Without `target`, this is the authenticated inventory route for the
+        current host. With `target`, the local browser-facing instance resolves
+        a configured target or exact configured tunnel origin and proxies the request
+        server-side. The target form never accepts an arbitrary network URL and
+        rejects `include_hashes=1` so unauthenticated browser callers cannot force
+        large remote inventory hashing.
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - name: model_type
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/ModelType"
+          description: Canonical ComfyUI model folder category. Omit to return all categories.
+        - name: include_hashes
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: ["0", "1", "false", "true"]
+            default: "0"
+          description: Keep `0` for UI dropdowns; the browser-proxy form with `target` rejects hash requests.
+        - name: target
+          in: query
+          required: false
+          schema:
+            type: string
+            example: renderhost
+          description: Optional configured target identifier or exact configured tunnel origin for the local browser-proxy form.
+      responses:
+        "200":
+          description: Model names and structured records by model type.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModelInventoryResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/RemoteServerDisabledOrTargetNotTrusted"
+        "502":
+          $ref: "#/components/responses/RemoteUnavailable"
+        "503":
+          $ref: "#/components/responses/TokenNotConfigured"
+      x-agent-notes:
+        useWhen:
+          - Resolving explicit model-category names or deciding whether an execution-time model file must be materialized.
+        doNotUseWhen:
+          - Do not use this model-only route to populate arbitrary node combos; use node definitions.
+        workflow:
+          - The browser-proxy form requires `include_hashes=0`; hash only a selected file through an authenticated execution path when correctness requires it.
+
+  /cutlery/remote/models/resolve:
+    post:
+      tags: [Model inventory]
+      summary: Resolve one selected model name on the current host
+      operationId: postCutleryRemoteModelResolve
+      description: Confirms that an exact relative model name exists in one canonical category.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ModelResolveRequest"
+      responses:
+        "200":
+          description: The selected model exists in the requested category.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModelResolveResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/RemoteServerDisabled"
+        "404":
+          description: The selected model name is not available on this host.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModelResolveResponse"
+        "503":
+          $ref: "#/components/responses/TokenNotConfigured"
+
+  /cutlery/remote/models/resolve-batch:
+    post:
+      tags: [Model inventory]
+      summary: Resolve and verify a batch of model identities
+      operationId: postCutleryRemoteModelsResolveBatch
+      description: Checks canonical category, name, size, and SHA-256 identities without overwriting conflicts.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [models, manifest_id]
+              properties:
+                manifest_id: {type: string, pattern: "^[0-9a-f]{64}$"}
+                models:
+                  type: array
+                  maxItems: 256
+                  items: {$ref: "#/components/schemas/ModelIdentity"}
+      responses:
+        "200":
+          description: One present or missing record for every requested identity.
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/RemoteServerDisabled"}
+        "503": {$ref: "#/components/responses/TokenNotConfigured"}
+      x-agent-notes:
+        useWhen: [Preparing all file-backed assets for one compiled executor.]
+        workflow:
+          - Hash selected local files through the path, size, and mtime digest cache; batch once; transfer only missing identities.
+
+  /cutlery/remote/blobs/exists:
+    post:
+      tags: [Blob cache]
+      summary: Report which content-addressed blobs are present
+      operationId: postCutleryRemoteBlobsExists
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BlobExistsRequest"
+      responses:
+        "200":
+          description: Requested hashes partitioned into present and missing lists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BlobExistsResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/RemoteServerDisabled"
+        "503":
+          $ref: "#/components/responses/TokenNotConfigured"
+      x-agent-notes:
+        useWhen:
+          - Checking which SHA-256 payloads need uploading before a remote execution.
+        doNotUseWhen:
+          - Inline value bundles do not need a separate existence check.
+        workflow:
+          - Send only lowercase SHA-256 digests and upload entries returned in `missing`.
+
+  /cutlery/remote/blobs:
+    post:
+      tags: [Blob cache]
+      summary: Store one content-addressed blob
+      operationId: postCutleryRemoteBlob
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BlobUploadRequest"
+      responses:
+        "200":
+          description: Stored or already-present blob metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BlobUploadResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/RemoteServerDisabled"
+        "503":
+          $ref: "#/components/responses/TokenNotConfigured"
+      x-agent-notes:
+        useWhen:
+          - Uploading one blob reported missing by `/cutlery/remote/blobs/exists`.
+        sideEffects:
+          - Writes an immutable SHA-256-addressed payload to the Cutlery remote cache.
+        consistency:
+          refresh:
+            - A subsequent blob-exists call for the returned hash reports it as present.
+
+  /cutlery/remote/compile:
+    post:
+      tags: [Remote execution]
+      summary: Canonically compile editor Remote groups
+      operationId: postCutleryRemoteCompile
+      security: []
+      description: |
+        Browser-facing local route. Python owns partitioning, runtime-object relocation,
+        preparation manifests, cache policy, and progress identity. The returned prompt
+        uses `CutleryRemoteGroupValueExecutor` for dependency-driven groups with local
+        consumers, preserving native lazy-switch behavior; terminal groups retain
+        `CutleryRemoteGroupExecutor` when they have no outbound values or contain an
+        original output node confirmed by local and peer definitions. A group selected
+        through `partial_execution_targets` also retains the terminal wrapper so its
+        remapped target remains valid for ComfyUI partial execution.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [workflow, prompt]
+              properties:
+                workflow: {type: object}
+                prompt: {type: object}
+                partial_execution_targets:
+                  type: array
+                  items: {type: string}
+                  description: Original prompt node ids selected for partial execution; selected remote-group members are remapped to terminal wrappers.
+      responses:
+        "200": {description: Compiled prompt (including dependency or terminal remote-wrapper class ids), remaps, diagnostics, relocation records, and preparation manifests.}
+        "400": {$ref: "#/components/responses/BadRequest"}
+      x-agent-notes:
+        useWhen: [Submitting a browser or WF3 workflow containing Cutlery Remote groups.]
+        workflow:
+          - Use the returned prompt; never reimplement group compilation in browser code.
+          - Preserve the returned generated wrapper class id so ComfyUI keeps dependency-driven remote branches lazy and schedules terminal groups as roots.
+          - Send partial execution targets with the original prompt ids; use the returned remaps when queueing the compiled prompt.
+
+  /cutlery/remote/group/preload:
+    post:
+      tags: [Remote execution]
+      summary: Queue a boundary-independent model preload recipe
+      operationId: postCutleryRemoteGroupPreload
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/RemoteGroupRunRequest"}
+      responses:
+        "200": {description: Preload prompt completed through ComfyUI's prompt queue and model manager.}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/RemoteServerDisabled"}
+
+  /cutlery/remote/group/run-stream:
+    get:
+      tags: [Remote execution]
+      summary: Execute a group with standard progress-state streaming
+      operationId: getCutleryRemoteGroupRunStream
+      description: |
+        Authenticated WebSocket. The client sends one `start` message with
+        `protocol_version: 1`, prompt id, workflow, values, and timeout. The peer
+        streams `progress` envelopes and terminates with exactly one `result` or
+        `error` envelope. A `cancel` control interrupts only that prompt.
+      responses:
+        "200": {description: WebSocket stream represented by clients that normalize the successful upgrade response.}
+        "101": {description: WebSocket protocol switched and stream established.}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/RemoteServerDisabled"}
+      x-agent-notes:
+        useWhen: [Executing a newly compiled progress-aware Remote group.]
+        doNotUseWhen: [Do not proxy `executing` events or binary previews.]
+
+  /cutlery/remote/group/run:
+    post:
+      tags: [Remote execution]
+      summary: Execute a compiled remote group workflow
+      operationId: postCutleryRemoteGroupRun
+      description: |
+        Runs a compiled prompt on this ComfyUI instance through the Cutlery workflow
+        runner path. Boundary inputs and outputs use Cutlery remote value bundles.
+        Callers should supply `prompt_id` so local cancellation can address this
+        specific remote run.
+
+        The compiled-group boundary is directional. Local-to-remote inputs may be
+        IMAGE, MASK, LATENT, CONDITIONING, AUDIO, primitive, JSON/wildcard,
+        or CUTLERY_LORA_CHAIN recipe values; VIDEO input is rejected. Remote-to-local
+        outputs may be IMAGE, AUDIO, VIDEO, primitive, or strict JSON/wildcard.
+        For graphical remote-group MASK, LATENT, and CONDITIONING connections,
+        the Cutlery browser compiler inserts the matching tensor-tree blob adapters
+        and declares the actual transport output as JSON. Raw MASK, LATENT,
+        CONDITIONING, and CUTLERY_LORA_CHAIN output ports are rejected. Callers
+        constructing compiled prompts directly must perform the same adaptation.
+        An inbound LoRA recipe contains registry names owned by the caller. The
+        local executor resolves them against this target, copies missing files,
+        and rewrites the names before calling this route. MODEL, CLIP, VAE, and
+        other runtime objects are reconstructed from relocated producer recipes
+        on the peer. Runtime objects remain forbidden as peer-to-client outputs.
+
+        File-backed AUDIO and VIDEO outputs are limited to 128 MiB per item and
+        256 MiB in aggregate before file reads and inline encoding. The receiving
+        executor materializes them into a content-addressed local runtime cache.
+        AUDIO is decoded eagerly and its file is released immediately. VIDEO is
+        lazy and remains owned by the current prompt until the prompt lifecycle
+        ends on success, error, or cancellation. If prompt lifecycle integration
+        is unavailable, unowned cache files are bounded to 512 MiB and six hours;
+        abandoned staging files are eligible for removal after ten minutes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RemoteGroupRunRequest"
+      responses:
+        "200":
+          description: Remote group completed and returned encoded output bundles.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RemoteGroupRunResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/RemoteServerDisabled"
+        "409":
+          description: The prompt-specific interrupt arrived before or while the workflow was being queued.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "504":
+          description: Remote group execution timed out and cancellation was attempted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+      x-agent-notes:
+        useWhen:
+          - Executing the prompt artifact produced by the remote-group compiler.
+        doNotUseWhen:
+          - Do not submit a normal saved workflow graph; this endpoint expects a validated API prompt.
+          - Do not send live MODEL, CLIP, VAE, sampler, guider, scheduler, or provider-client objects as values.
+          - Do not send local-to-remote VIDEO inputs, declare raw remote-to-local MASK, LATENT, or CONDITIONING output ports, or request remote-to-local CUTLERY_LORA_CHAIN outputs.
+        sideEffects:
+          - Queues and executes work on the target ComfyUI instance.
+        workflow:
+          - Require `remote_node_definitions_v1`, `prompt_specific_interrupt`, every serializer implied by the directional boundary ports, and `remote_lora_chain_boundary_v1` when a CUTLERY_LORA_CHAIN input is declared.
+          - Preflight node definitions, per-node compatibility, combo selections, model materialization, LoRA-chain materialization, and boundary serializers before submission.
+          - Represent graphical remote-to-local MASK, LATENT, and CONDITIONING links as JSON output ports using the matching Cutlery tensor-tree blob adapters; never declare those raw runtime structures as output ports.
+          - Require at most 64 unique valid input ports and 64 unique valid output ports, with the wrapper declarations exactly matching the single embedded Workflow Input and Workflow Output nodes.
+          - Generate and retain `prompt_id` before calling so an interrupted local run can call the prompt-specific interrupt route.
+
+  /cutlery/remote/group/{remote_prompt_id}/interrupt:
+    post:
+      tags: [Remote execution]
+      summary: Interrupt one remote group prompt
+      operationId: postCutleryRemoteGroupInterrupt
+      parameters:
+        - name: remote_prompt_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+          description: Prompt id supplied to or returned from the group-run request.
+      responses:
+        "200":
+          description: Prompt-specific cancellation was attempted; an already-finished prompt is a no-op.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RemoteGroupInterruptResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/RemoteServerDisabled"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+      x-agent-notes:
+        useWhen:
+          - The corresponding local prompt is cancelled or the remote execution deadline expires.
+        sideEffects:
+          - Records a bounded cancellation tombstone, interrupts the matching running prompt, or removes the matching queued prompt.
+        workflow:
+          - Use the exact id associated with the group-run request; never substitute a global ComfyUI interrupt.
+          - A cancellation recorded before queue insertion prevents the matching group-run request from being enqueued later.
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: Shared token configured as `CUTLERY_REMOTE_TOKEN` on trusted peers.
+
+  responses:
+    BadRequest:
+      description: Invalid request body, query, target identifier, or schema.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Unauthorized:
+      description: Missing or invalid shared token.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    TokenNotConfigured:
+      description: "`CUTLERY_REMOTE_TOKEN` is not configured on the serving or proxying instance."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    RemoteServerDisabled:
+      description: Inbound generic Remote routes are disabled. Set `CUTLERY_REMOTE_SERVER_ENABLED=1` and restart ComfyUI.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/FeatureDisabledResponse"
+    TargetNotTrusted:
+      description: The target or origin is not configured in `CUTLERY_DATA_DIR/config.json`.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    RemoteServerDisabledOrTargetNotTrusted:
+      description: The direct local inventory role is disabled, or the outbound proxy target is not configured in `CUTLERY_DATA_DIR/config.json`.
+      content:
+        application/json:
+          schema:
+            oneOf:
+              - $ref: "#/components/schemas/FeatureDisabledResponse"
+              - $ref: "#/components/schemas/ErrorResponse"
+    RemoteUnavailable:
+      description: The configured target could not be reached or returned an invalid response.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    ServiceUnavailable:
+      description: A required Cutlery workflow or ComfyUI execution service is unavailable.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    InternalError:
+      description: The requested Cutlery remote operation failed unexpectedly.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+  schemas:
+    FeatureDisabledResponse:
+      type: object
+      required: [ok, code, error]
+      properties:
+        ok:
+          type: boolean
+          const: false
+        code:
+          type: string
+          const: remote_server_disabled
+        error:
+          type: string
+    ErrorResponse:
+      type: object
+      required: [ok, error]
+      properties:
+        ok:
+          type: boolean
+          const: false
+        error:
+          type: string
+        code:
+          type: string
+        request_id:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
+      additionalProperties: true
+
+    CapabilitiesResponse:
+      type: object
+      required: [ok, protocol_version, auth, serializers, features]
+      properties:
+        ok:
+          type: boolean
+          const: true
+        protocol_version:
+          type: integer
+          minimum: 1
+        auth:
+          type: object
+          required: [type]
+          properties:
+            type:
+              type: string
+              const: shared_token
+          additionalProperties: true
+        serializers:
+          type: array
+          items:
+            type: string
+          uniqueItems: true
+        features:
+          type: object
+          properties:
+            remote_groups:
+              type: boolean
+            content_addressed_blobs:
+              type: boolean
+            remote_clip_text_encode:
+              type: boolean
+            remote_prompt_execution:
+              type: boolean
+            remote_model_inventory:
+              type: boolean
+            remote_node_definitions_v1:
+              type: boolean
+            prompt_specific_interrupt:
+              type: boolean
+            remote_runtime_object_relocation_v1:
+              type: boolean
+              description: Accepts deterministic inbound runtime-object producer reconstruction recipes.
+            remote_model_preload_v1:
+              type: boolean
+              description: Supports peer-queued preload prompts through ComfyUI's model manager.
+            remote_progress_v1:
+              type: boolean
+              description: Supports authenticated streamed standard node progress for compiled groups.
+            remote_lora_chain_boundary_v1:
+              type: boolean
+              description: Accepts target-materialized CUTLERY_LORA_CHAIN recipes as compiled group inputs.
+          additionalProperties:
+            type: boolean
+      additionalProperties: true
+
+    NodeDefinitionsRequest:
+      type: object
+      required: [class_types]
+      properties:
+        class_types:
+          type: array
+          minItems: 0
+          maxItems: 128
+          items:
+            type: string
+            minLength: 1
+      additionalProperties: false
+
+    ProxyNodeDefinitionsRequest:
+      type: object
+      required: [target, class_types]
+      properties:
+        target:
+          type: string
+          minLength: 1
+          description: Configured alias/canonical target, or an origin that exactly matches a configured target.
+          example: renderhost
+        class_types:
+          type: array
+          minItems: 0
+          maxItems: 128
+          items:
+              type: string
+              minLength: 1
+      additionalProperties: false
+
+    RemoteRegistryId:
+      type: string
+      enum:
+        - remote_clip.choices
+
+    ProxyRegistryRequest:
+      type: object
+      required: [target, registry, payload]
+      properties:
+        target:
+          type: string
+          minLength: 1
+          description: Configured alias/canonical target, or an origin that exactly matches a configured target.
+          example: renderhost
+        registry:
+          $ref: "#/components/schemas/RemoteRegistryId"
+        payload:
+          type: object
+          description: |
+            Empty, size-bounded discovery context for `remote_clip.choices`.
+            Unknown fields, upstream URLs, and API keys are rejected.
+          additionalProperties: true
+      additionalProperties: false
+
+    ProxyRegistryResponse:
+      type: object
+      required: [ok, registry, target, payload]
+      properties:
+        ok:
+          type: boolean
+          const: true
+        registry:
+          $ref: "#/components/schemas/RemoteRegistryId"
+        target:
+          type: string
+          description: Canonical trusted-target identifier selected by the proxy.
+        payload:
+          type: object
+          description: Unmodified JSON object returned by the allowlisted target route.
+          additionalProperties: true
+      additionalProperties: false
+
+    NodeDefinitionsResponse:
+      type: object
+      required: [ok, schema_version, complete, requested_count, definition_count, nodes]
+      properties:
+        ok:
+          type: boolean
+          const: true
+          description: |
+            The batch request was processed and returned a normalized response.
+            This is envelope success, not proof that every requested class is
+            available or usable; inspect `complete` and every node record.
+        schema_version:
+          type: integer
+          const: 1
+        complete:
+          type: boolean
+          description: |
+            True only when every distinct requested class was successfully
+            normalized without definition errors. This is not itself a
+            comparison between definitions from two hosts.
+        requested_count:
+          type: integer
+          minimum: 0
+          description: Number of class-type entries in the request, including duplicates.
+        definition_count:
+          type: integer
+          minimum: 0
+          description: Number of distinct normalized node records.
+        nodes:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/RemoteNodeDefinition"
+      additionalProperties: false
+
+    RemoteNodeDefinition:
+      type: object
+      required:
+        - ok
+        - missing
+        - class_type
+        - source
+        - input_is_list
+        - inputs
+        - outputs
+        - cache
+        - signature
+        - errors
+        - available
+        - compatible
+        - input_options
+      properties:
+        ok:
+          type: boolean
+          description: Internal normalized definition succeeded without structural/input errors.
+        missing:
+          type: boolean
+          description: Requested class is not installed on this host.
+        class_type:
+          type: string
+        available:
+          type: boolean
+          description: False only when the requested class is not installed.
+        compatible:
+          type: boolean
+          description: |
+            Public alias for this record's `ok` state. It means the class
+            definition was safely normalized; local/remote structural equality
+            is a separate compiler preflight check.
+        source:
+          oneOf:
+            - type: string
+              enum: [GET_NODE_INFO_V1, INPUT_TYPES]
+            - type: "null"
+        input_is_list:
+          type: boolean
+        inputs:
+          $ref: "#/components/schemas/RemoteNodeInputs"
+        outputs:
+          type: array
+          items:
+            $ref: "#/components/schemas/RemoteNodeOutput"
+        cache:
+          $ref: "#/components/schemas/RemoteNodeCacheContract"
+        signature:
+          $ref: "#/components/schemas/RemoteNodeSignature"
+          description: Normalized structural contract used for compatibility comparison.
+        errors:
+          type: array
+          items:
+            $ref: "#/components/schemas/NodeDefinitionError"
+        input_options:
+          type: object
+          description: Flat name-to-input map containing only concrete combo inputs.
+          additionalProperties:
+            $ref: "#/components/schemas/RemoteNodeInput"
+      additionalProperties: false
+
+    RemoteNodeInputs:
+      type: object
+      required: [required, optional, hidden]
+      properties:
+        required:
+          $ref: "#/components/schemas/RemoteNodeInputSection"
+        optional:
+          $ref: "#/components/schemas/RemoteNodeInputSection"
+        hidden:
+          $ref: "#/components/schemas/RemoteNodeInputSection"
+      additionalProperties: false
+
+    RemoteNodeInputSection:
+      type: object
+      additionalProperties:
+        $ref: "#/components/schemas/RemoteNodeInput"
+
+    RemoteNodeInput:
+      type: object
+      required: [kind, type, materializable]
+      properties:
+        kind:
+          type: string
+          enum: [combo, noncombo, dynamic, error]
+        type:
+          type: string
+        materializable:
+          type: boolean
+          description: Whether the execution-time loader registry can copy this selected model file.
+        upload_backed:
+          type: boolean
+          description: |
+            True when ComfyUI marks the combo with an image, audio, video, or
+            generic file-upload flag. Present on combo, dynamic, and input-error
+            records; upload actions require a remote-context adapter.
+        registry:
+          type: string
+          description: |
+            Stable browser-registry owner for inputs whose valid options depend
+            on per-node context and must be queried through the registry proxy.
+        option_count:
+          type: integer
+          minimum: 0
+        options:
+          type: array
+          items:
+            $ref: "#/components/schemas/ComboScalar"
+          description: Present only for a concrete combo; an empty array is meaningful.
+        error:
+          $ref: "#/components/schemas/NodeDefinitionError"
+      additionalProperties: false
+
+    RemoteNodeOutput:
+      type: object
+      required: [index, type, name, is_list]
+      properties:
+        index:
+          type: integer
+          minimum: 0
+        type:
+          type: string
+        name:
+          type: string
+        is_list:
+          type: boolean
+      additionalProperties: false
+
+    RemoteNodeSignature:
+      type: object
+      required: [input_is_list, inputs, outputs, cache]
+      properties:
+        input_is_list:
+          type: boolean
+        inputs:
+          $ref: "#/components/schemas/RemoteNodeSignatureInputs"
+        outputs:
+          type: array
+          items:
+            $ref: "#/components/schemas/RemoteNodeOutput"
+        cache:
+          $ref: "#/components/schemas/RemoteNodeCacheContract"
+      additionalProperties: false
+
+    RemoteNodeCacheContract:
+      type: object
+      required: [declared_inputs_only, has_change_fingerprint, not_idempotent, output_node]
+      properties:
+        declared_inputs_only:
+          type: boolean
+          description: |
+            True only when the node's declared prompt inputs fully determine its
+            cache identity. A group compiler must treat a missing or false value
+            as unsafe for sender-side result caching.
+        has_change_fingerprint:
+          type: boolean
+          description: |
+            True when the node defines legacy `IS_CHANGED` behavior or overrides
+            the V3 `fingerprint_inputs` hook.
+        not_idempotent:
+          type: boolean
+          description: True when the node declares `NOT_IDEMPOTENT`.
+        output_node:
+          type: boolean
+          description: True when the node declares `OUTPUT_NODE` and is unsafe to relocate.
+      additionalProperties: false
+
+    RemoteNodeSignatureInputs:
+      type: object
+      required: [required, optional, hidden]
+      properties:
+        required:
+          type: array
+          items:
+            $ref: "#/components/schemas/RemoteNodeSignatureInput"
+        optional:
+          type: array
+          items:
+            $ref: "#/components/schemas/RemoteNodeSignatureInput"
+        hidden:
+          type: array
+          items:
+            $ref: "#/components/schemas/RemoteNodeSignatureInput"
+      additionalProperties: false
+
+    RemoteNodeSignatureInput:
+      type: object
+      required: [name, kind, type]
+      properties:
+        name:
+          type: string
+        kind:
+          type: string
+          enum: [combo, noncombo, dynamic, error]
+        type:
+          type: string
+      additionalProperties: false
+
+    NodeDefinitionError:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        class_type:
+          type: string
+        input_name:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
+      additionalProperties: true
+
+    ComboScalar:
+      oneOf:
+        - type: string
+        - type: number
+        - type: boolean
+        - type: "null"
+
+    ModelType:
+      type: string
+      description: |
+        Canonical categories are owned by
+        `cutlery_remote.inventory.CANONICAL_MODEL_TYPES`.
+      enum:
+        - checkpoints
+        - diffusion_models
+        - text_encoders
+        - vae
+        - loras
+        - clip_vision
+        - controlnet
+        - style_models
+        - upscale_models
+        - latent_upscale_models
+        - gligen
+        - clip_gguf
+        - unet_gguf
+        - vae_approx
+        - geometry_estimation
+        - audio_encoders
+        - wav2vec2
+        - nlf
+        - mmaudio
+        - background_removal
+        - frame_interpolation
+        - detection
+        - model_patches
+        - photomaker
+        - optical_flow
+        - ipadapter
+
+    ModelInventoryResponse:
+      type: object
+      required: [ok, model_types, records, models]
+      properties:
+        ok:
+          type: boolean
+          const: true
+        model_type:
+          $ref: "#/components/schemas/ModelType"
+        model_types:
+          type: array
+          items:
+            $ref: "#/components/schemas/ModelType"
+        models:
+          type: array
+          items:
+            type: string
+        records:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              $ref: "#/components/schemas/ModelInventoryRecord"
+      additionalProperties: true
+
+    ModelInventoryRecord:
+      type: object
+      required: [model_type, name]
+      properties:
+        model_type:
+          $ref: "#/components/schemas/ModelType"
+        name:
+          type: string
+        size:
+          type: integer
+          minimum: 0
+        mtime:
+          type: number
+        hash:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+      additionalProperties: false
+
+    ModelResolveRequest:
+      type: object
+      required: [model_type, model_name]
+      properties:
+        model_type:
+          $ref: "#/components/schemas/ModelType"
+        model_name:
+          type: string
+          minLength: 1
+      additionalProperties: false
+
+    ModelResolveResponse:
+      type: object
+      required: [ok, model_type, model_name]
+      properties:
+        ok:
+          type: boolean
+        model_type:
+          $ref: "#/components/schemas/ModelType"
+        model_name:
+          type: string
+        error:
+          type: string
+      additionalProperties: false
+
+    ModelIdentity:
+      type: object
+      required: [category, canonical_name, size, sha256]
+      properties:
+        category: {$ref: "#/components/schemas/ModelType"}
+        canonical_name: {type: string, minLength: 1}
+        size: {type: integer, minimum: 0}
+        sha256: {$ref: "#/components/schemas/Sha256"}
+      additionalProperties: true
+
+    Sha256:
+      type: string
+      pattern: "^[0-9a-f]{64}$"
+      example: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+
+    BlobExistsRequest:
+      type: object
+      required: [hashes]
+      properties:
+        hashes:
+          type: array
+          items:
+            $ref: "#/components/schemas/Sha256"
+      additionalProperties: false
+
+    BlobExistsResponse:
+      type: object
+      required: [ok, present, missing]
+      properties:
+        ok:
+          type: boolean
+          const: true
+        present:
+          type: array
+          items:
+            $ref: "#/components/schemas/Sha256"
+        missing:
+          type: array
+          items:
+            $ref: "#/components/schemas/Sha256"
+      additionalProperties: false
+
+    BlobUploadRequest:
+      type: object
+      required: [data_b64]
+      properties:
+        hash:
+          $ref: "#/components/schemas/Sha256"
+        data_b64:
+          type: string
+          contentEncoding: base64
+          description: Base64-encoded payload. When `hash` is supplied it must match the decoded bytes.
+      additionalProperties: false
+
+    BlobUploadResponse:
+      type: object
+      required: [ok, blob]
+      properties:
+        ok:
+          type: boolean
+          const: true
+        blob:
+          $ref: "#/components/schemas/BlobRecord"
+      additionalProperties: false
+
+    BlobRecord:
+      type: object
+      required: [hash, size]
+      properties:
+        hash:
+          $ref: "#/components/schemas/Sha256"
+        size:
+          type: integer
+          minimum: 0
+      additionalProperties: false
+
+    RemoteValueBundle:
+      type: object
+      description: |
+        Versioned Cutlery value transport. The compiled-group contract permits
+        local-to-remote IMAGE, MASK, LATENT, CONDITIONING, AUDIO, primitives,
+        JSON/wildcard values, and supported recipe forms, but rejects
+        local-to-remote VIDEO. Remote-to-local bundles permit IMAGE, AUDIO, VIDEO,
+        primitives, and strict JSON/wildcard values, but reject MASK, LATENT, and
+        CONDITIONING. Loaded runtime objects are never valid bundle values.
+      required: [schema, manifest, blobs]
+      properties:
+        schema:
+          type: string
+          const: cutlery.remote.value_bundle.v1
+        manifest:
+          type: object
+          additionalProperties: true
+        blobs:
+          type: object
+          additionalProperties:
+            type: string
+            contentEncoding: base64
+      additionalProperties: false
+
+    RemoteGroupRunRequest:
+      type: object
+      required: [workflow]
+      properties:
+        prompt_id:
+          type: string
+          minLength: 1
+          description: Caller-generated id used for prompt-specific cancellation.
+        workflow:
+          type: object
+          description: |
+            Validated ComfyUI API prompt generated by the remote-group compiler.
+            The compiled boundary uses one CutleryWorkflowInput per inbound port
+            and exactly one CutleryWorkflowOutput node. Legacy workflows with one
+            multi-port CutleryWorkflowInput remain valid. The aggregate input and
+            output declarations allow at most 64 unique valid ports in each
+            direction, and their normalized names and types must exactly match the
+            local generated executor's declarations.
+          additionalProperties:
+            type: object
+            additionalProperties: true
+        values:
+          type: object
+          description: |
+            Named local-to-remote input bundles. VIDEO is not allowed by the
+            compiled-group boundary contract. CUTLERY_LORA_CHAIN bundles must
+            already contain names resolved for this target; the calling executor
+            performs any required LoRA copy and name rewrite before submission.
+            Loaded runtime objects and undeclared socket types are rejected
+            before dispatch.
+          additionalProperties:
+            $ref: "#/components/schemas/RemoteValueBundle"
+        timeout_seconds:
+          type: number
+          exclusiveMinimum: 0
+          maximum: 86400
+          default: 300
+        partial_execution_targets:
+          type: array
+          items:
+            type: string
+      additionalProperties: true
+
+    RemoteGroupRunResponse:
+      type: object
+      required: [ok]
+      properties:
+        ok:
+          type: boolean
+        prompt_id:
+          type: string
+        outputs:
+          type: object
+          description: |
+            Named remote-to-local output bundles. IMAGE, AUDIO, VIDEO, primitives,
+            and strict JSON/wildcard values are supported. MASK, LATENT, and
+            CONDITIONING outputs are rejected, as are CUTLERY_LORA_CHAIN recipes
+            whose names would belong to this remote machine. File-backed AUDIO
+            and VIDEO are limited to 128 MiB per item and 256 MiB across the response.
+          additionalProperties:
+            $ref: "#/components/schemas/RemoteValueBundle"
+        error:
+          type: string
+        cancellation:
+          type: object
+          additionalProperties: true
+      additionalProperties: true
+
+    RemoteGroupInterruptResponse:
+      type: object
+      required:
+        - ok
+        - remote_prompt_id
+        - removed_from_queue
+        - interrupted_running
+        - cancelled
+        - cancellation_recorded
+      properties:
+        ok:
+          type: boolean
+          const: true
+        remote_prompt_id:
+          type: string
+        removed_from_queue:
+          type: boolean
+        interrupted_running:
+          type: boolean
+        cancelled:
+          type: boolean
+        cancellation_recorded:
+          type: boolean
+          const: true
+      additionalProperties: false
