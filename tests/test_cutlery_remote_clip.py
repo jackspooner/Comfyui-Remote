@@ -146,6 +146,149 @@ class CutleryRemoteClipTests(unittest.TestCase):
         self.assertIs(result, disabled)
         module._authorized.assert_not_called()
 
+    def test_remote_clip_endpoint_queues_a_normal_comfyui_job_and_returns_its_conditioning(self):
+        routes = _Routes()
+        module = _load_remote_clip_module(routes)
+        captured = {}
+
+        class Queue:
+            def put(self, item):
+                captured["item"] = item
+                ui = module.CutleryRemoteClipTextEncodeJob().execute(item[2]["1"]["inputs"]["payload_json"])["ui"]
+                captured["history"] = {
+                    item[1]: {
+                        "status": {"status_str": "success", "completed": True, "messages": []},
+                        "outputs": {"1": ui},
+                    }
+                }
+
+            def get_history(self, prompt_id):
+                return captured.get("history", {}).get(prompt_id) and captured["history"]
+
+            def delete_queue_item(self, _predicate):
+                return False
+
+            def interrupt_if_running(self, _prompt_id):
+                return False
+
+        queue = Queue()
+        module.PromptServer.instance.prompt_queue = queue
+        module.PromptServer.instance.number = 4
+        conditioning = {"schema": "cutlery.value_bundle.v1", "manifest": {"type": "list", "items": []}, "tensors": []}
+
+        execution = types.ModuleType("execution")
+
+        async def validate_prompt(prompt_id, prompt, targets):
+            captured["validated"] = (prompt_id, prompt, targets)
+            return True, None, ["1"], {}
+
+        execution.validate_prompt = validate_prompt
+        execution.SENSITIVE_EXTRA_DATA_KEYS = ()
+
+        with (
+            mock.patch.dict(os.environ, {"CUTLERY_REMOTE_TOKEN": "abc123"}, clear=True),
+            mock.patch.dict(sys.modules, {"execution": execution}),
+            mock.patch.object(module, "encode_remote_clip_text", return_value={"ok": True, "conditioning": conditioning}),
+        ):
+            response = asyncio.run(
+                routes.handlers[("POST", "/cutlery/remote/clip/text-encode")](
+                    types.SimpleNamespace(
+                        headers={"Authorization": "Bearer abc123"},
+                        json=lambda: {"prompt": "queued remotely", "text_encoder": "remote.safetensors"},
+                    )
+                )
+            )
+
+        self.assertEqual(response["status"], 200)
+        self.assertEqual(response["payload"]["conditioning"], conditioning)
+        self.assertEqual(captured["item"][0], 4.0)
+        self.assertEqual(captured["item"][2]["1"]["class_type"], "CutleryRemoteClipTextEncodeJob")
+        self.assertEqual(captured["item"][2]["1"]["_meta"]["title"], "Remote CLIP Text Encode")
+        self.assertEqual(json.loads(captured["item"][2]["1"]["inputs"]["payload_json"]), {"prompt": "queued remotely", "text_encoder": "remote.safetensors"})
+        self.assertEqual(captured["validated"][1], captured["item"][2])
+        self.assertEqual(captured["validated"][2], None)
+
+    def test_remote_clip_job_failure_is_returned_from_comfyui_history(self):
+        module = _load_remote_clip_module()
+
+        class Queue:
+            def put(self, item):
+                self.prompt_id = item[1]
+
+            def get_history(self, prompt_id):
+                return {
+                    prompt_id: {
+                        "status": {"status_str": "error", "completed": False, "messages": ["execution failed"]},
+                        "outputs": {},
+                    }
+                }
+
+            def delete_queue_item(self, _predicate):
+                return False
+
+            def interrupt_if_running(self, _prompt_id):
+                return False
+
+        module.PromptServer.instance.prompt_queue = Queue()
+        module.PromptServer.instance.number = 0
+        execution = types.ModuleType("execution")
+        execution.SENSITIVE_EXTRA_DATA_KEYS = ()
+
+        async def validate_prompt(_prompt_id, _prompt, _targets):
+            return True, None, ["1"], {}
+
+        execution.validate_prompt = validate_prompt
+        with mock.patch.dict(sys.modules, {"execution": execution}):
+            payload, status = asyncio.run(module._submit_remote_clip_job("single", {"prompt": "fails"}))
+
+        self.assertEqual(status, 500)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error"], "execution failed")
+
+    def test_remote_clip_job_timeout_cancels_only_its_queued_prompt(self):
+        module = _load_remote_clip_module()
+
+        class Queue:
+            def __init__(self):
+                self.item = None
+                self.deleted = None
+                self.interrupted = None
+
+            def put(self, item):
+                self.item = item
+
+            def get_history(self, prompt_id):
+                return {}
+
+            def delete_queue_item(self, predicate):
+                self.deleted = predicate
+                return True
+
+            def interrupt_if_running(self, prompt_id):
+                self.interrupted = prompt_id
+                return False
+
+        queue = Queue()
+        module.PromptServer.instance.prompt_queue = queue
+        module.PromptServer.instance.number = 0
+        execution = types.ModuleType("execution")
+        execution.SENSITIVE_EXTRA_DATA_KEYS = ()
+
+        async def validate_prompt(_prompt_id, _prompt, _targets):
+            return True, None, ["1"], {}
+
+        execution.validate_prompt = validate_prompt
+        with (
+            mock.patch.dict(sys.modules, {"execution": execution}),
+            mock.patch.object(module, "_remote_clip_encode_timeout", return_value=0),
+        ):
+            payload, status = asyncio.run(module._submit_remote_clip_job("single", {"prompt": "times out"}))
+
+        self.assertEqual(status, 504)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(queue.interrupted, queue.item[1])
+        self.assertTrue(queue.deleted(queue.item))
+
     def test_streamed_materialization_enforces_exact_file_limit(self):
         module = _load_remote_clip_module()
 
@@ -1693,7 +1836,10 @@ class CutleryRemoteClipTests(unittest.TestCase):
         module._load_clip_for_remote_encode = lambda text_encoder, clip_type, device: fake_clip
         module._apply_clip_loras = lambda clip, entries: clip
 
-        with mock.patch.dict(os.environ, {"CUTLERY_REMOTE_TOKEN": "abc123"}, clear=True):
+        with (
+            mock.patch.dict(os.environ, {"CUTLERY_REMOTE_TOKEN": "abc123"}, clear=True),
+            mock.patch.object(module, "_submit_remote_clip_job", new=mock.AsyncMock(return_value=({"ok": True}, 200))),
+        ):
             inventory = asyncio.run(
                 routes.handlers[("GET", "/cutlery/remote/clip/inventory")](
                     types.SimpleNamespace(headers={"Authorization": "Bearer abc123"})

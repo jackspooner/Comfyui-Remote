@@ -69,7 +69,7 @@ paths:
       tags: [Remote CLIP execution]
       summary: Encode prompt text on the remote ComfyUI instance
       operationId: postCutleryRemoteClipTextEncode
-      description: Available only when `CUTLERY_REMOTE_CLIP_SERVER_ENABLED=1`; the disabled check runs before authentication, JSON parsing, model loading, or encoding.
+      description: Available only when `CUTLERY_REMOTE_CLIP_SERVER_ENABLED=1`; the disabled check runs before authentication or JSON parsing. Accepted work is submitted as a normal ComfyUI prompt named `Remote CLIP Text Encode`, then this request waits for that prompt's history entry and returns its serialized CONDITIONING.
       requestBody:
         required: true
         content:
@@ -97,12 +97,18 @@ paths:
           $ref: "#/components/responses/InternalError"
         "503":
           $ref: "#/components/responses/TokenNotConfigured"
+        "504":
+          description: The queued Remote CLIP job did not complete before the configured encode timeout and was cancelled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /cutlery/remote/clip/dual-text-encode:
     post:
       tags: [Remote CLIP execution]
       summary: Encode prompt text with two remote CLIP/text encoder files
       operationId: postCutleryRemoteDualClipTextEncode
-      description: Available only when `CUTLERY_REMOTE_CLIP_SERVER_ENABLED=1`; the disabled check runs before authentication, JSON parsing, model loading, or encoding.
+      description: Available only when `CUTLERY_REMOTE_CLIP_SERVER_ENABLED=1`; the disabled check runs before authentication or JSON parsing. Accepted work is submitted as a normal ComfyUI prompt named `Remote CLIP Text Encode`, then this request waits for that prompt's history entry and returns its serialized CONDITIONING.
       requestBody:
         required: true
         content:
@@ -130,12 +136,18 @@ paths:
           $ref: "#/components/responses/InternalError"
         "503":
           $ref: "#/components/responses/TokenNotConfigured"
+        "504":
+          description: The queued Remote CLIP job did not complete before the configured encode timeout and was cancelled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /cutlery/remote/clip/qwen-image-edit-plus:
     post:
       tags: [Remote CLIP execution]
       summary: Encode Qwen image-edit prompt and images on the remote ComfyUI instance
       operationId: postCutleryRemoteQwenImageEditPlus
-      description: Available only when `CUTLERY_REMOTE_CLIP_SERVER_ENABLED=1`. The request body is limited to 2 GiB by default and the disabled check runs before authentication, JSON parsing, materialization reads, model loading, or encoding.
+      description: Available only when `CUTLERY_REMOTE_CLIP_SERVER_ENABLED=1`. The request body is limited to 2 GiB by default and the disabled check runs before authentication or JSON parsing. Accepted work is submitted as a normal ComfyUI prompt named `Remote CLIP Text Encode`, then this request waits for that prompt's history entry and returns its serialized CONDITIONING.
       requestBody:
         required: true
         content:
@@ -169,6 +181,12 @@ paths:
           $ref: "#/components/responses/InternalError"
         "503":
           $ref: "#/components/responses/TokenNotConfigured"
+        "504":
+          description: The queued Remote CLIP job did not complete before the configured encode timeout and was cancelled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /cutlery/remote/clip/unload:
     post:
       tags: [Remote CLIP cleanup]
@@ -767,11 +785,15 @@ components:
             contentEncoding: base64
     RemoteClipTextEncodeResponse:
       type: object
-      required: [ok, conditioning]
+      required: [ok, prompt_id, conditioning]
       properties:
         ok:
           type: boolean
           const: true
+        prompt_id:
+          type: string
+          format: uuid
+          description: The normal ComfyUI prompt ID recorded in the serving peer's job history.
         conditioning:
           $ref: "#/components/schemas/RemoteValueBundle"
     RemoteClipLoraMaterializeResponse:

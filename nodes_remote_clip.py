@@ -14,8 +14,10 @@ import os
 from pathlib import Path
 import re
 import tempfile
+import time
 from typing import Any
 import urllib.parse
+import uuid
 
 try:
     from .cutlery_config import REMOTE_CLIP_SERVER_ENV
@@ -116,6 +118,8 @@ _VAE_CACHE: dict[str, Any] = {}
 _REMOTE_CLIP_CONDITIONING_CACHE: OrderedDict[tuple[Any, ...], dict[str, Any]] = OrderedDict()
 _ACTIVE_CLIP_KEY: tuple[Any, ...] | None = None
 _LORA_HASH_CACHE: dict[str, tuple[int, int, str]] = {}
+REMOTE_CLIP_JOB_NODE_ID = "1"
+REMOTE_CLIP_JOB_UI_KEY = "cutlery_remote_clip"
 
 
 class RemoteClipUploadTooLarge(ValueError):
@@ -2108,6 +2112,158 @@ def encode_remote_qwen_image_edit_plus_text(body: dict[str, Any]) -> dict[str, A
     return {"ok": True, "conditioning": encode_value_bundle(conditioning)}
 
 
+def _remote_clip_job_payload(payload_json: str) -> dict[str, Any]:
+    try:
+        payload = json.loads(payload_json)
+    except json.JSONDecodeError as error:
+        raise ValueError("Remote CLIP job payload must be valid JSON.") from error
+    if not isinstance(payload, dict):
+        raise ValueError("Remote CLIP job payload must be a JSON object.")
+    return payload
+
+
+def _run_remote_clip_job_encoder(payload_json: str, encoder) -> dict[str, Any]:
+    result = encoder(_remote_clip_job_payload(payload_json))
+    bundle = result.get("conditioning") if isinstance(result, dict) else None
+    if not isinstance(bundle, dict):
+        raise RuntimeError("Remote CLIP encoder did not return a conditioning bundle.")
+    return {"ui": {REMOTE_CLIP_JOB_UI_KEY: [bundle]}}
+
+
+class _CutleryRemoteClipJob:
+    RETURN_TYPES = ()
+    FUNCTION = "execute"
+    OUTPUT_NODE = True
+    CATEGORY = CATEGORY
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "payload_json": ("STRING", {"multiline": True}),
+            },
+        }
+
+
+class CutleryRemoteClipTextEncodeJob(_CutleryRemoteClipJob):
+    DESCRIPTION = "Execute one Remote CLIP text-encoding request queued by a trusted peer."
+
+    def execute(self, payload_json: str):
+        return _run_remote_clip_job_encoder(payload_json, encode_remote_clip_text)
+
+
+class CutleryRemoteDualClipTextEncodeJob(_CutleryRemoteClipJob):
+    DESCRIPTION = "Execute one Remote dual-CLIP text-encoding request queued by a trusted peer."
+
+    def execute(self, payload_json: str):
+        return _run_remote_clip_job_encoder(payload_json, encode_remote_dual_clip_text)
+
+
+class CutleryRemoteQwenImageEditPlusEncodeJob(_CutleryRemoteClipJob):
+    DESCRIPTION = "Execute one Remote Qwen image-edit text-encoding request queued by a trusted peer."
+
+    def execute(self, payload_json: str):
+        return _run_remote_clip_job_encoder(payload_json, encode_remote_qwen_image_edit_plus_text)
+
+
+_REMOTE_CLIP_JOB_CLASS_TYPES = {
+    "single": "CutleryRemoteClipTextEncodeJob",
+    "dual": "CutleryRemoteDualClipTextEncodeJob",
+    "qwen_image_edit_plus": "CutleryRemoteQwenImageEditPlusEncodeJob",
+}
+
+
+def _remote_clip_job_error(status: Any) -> str:
+    if not isinstance(status, dict):
+        return "Remote CLIP job failed."
+    messages = status.get("messages")
+    if isinstance(messages, list) and messages:
+        return str(messages[-1])
+    return "Remote CLIP job failed."
+
+
+def _cancel_remote_clip_job(prompt_queue: Any, prompt_id: str) -> None:
+    def is_prompt(item: Any) -> bool:
+        return isinstance(item, (list, tuple)) and len(item) > 1 and str(item[1]) == prompt_id
+
+    prompt_queue.delete_queue_item(is_prompt)
+    prompt_queue.interrupt_if_running(prompt_id)
+
+
+async def _submit_remote_clip_job(kind: str, body: dict[str, Any]) -> tuple[dict[str, Any], int]:
+    if PromptServer is None:
+        return {"ok": False, "error": "ComfyUI PromptServer is not available."}, 503
+    class_type = _REMOTE_CLIP_JOB_CLASS_TYPES.get(kind)
+    if class_type is None:
+        raise ValueError(f"Unsupported Remote CLIP job kind: {kind}")
+
+    try:
+        import execution
+    except Exception as error:
+        return {"ok": False, "error": f"Could not import ComfyUI execution module: {error}"}, 500
+
+    server = PromptServer.instance
+    prompt_queue = getattr(server, "prompt_queue", None)
+    if prompt_queue is None:
+        return {"ok": False, "error": "ComfyUI prompt queue is not available."}, 503
+
+    prompt_id = str(uuid.uuid4())
+    prompt = {
+        REMOTE_CLIP_JOB_NODE_ID: {
+            "class_type": class_type,
+            "inputs": {"payload_json": json.dumps(body, separators=(",", ":"))},
+            "_meta": {"title": "Remote CLIP Text Encode"},
+        },
+    }
+    if hasattr(server, "node_replace_manager"):
+        server.node_replace_manager.apply_replacements(prompt)
+    valid = await execution.validate_prompt(prompt_id, prompt, None)
+    if not valid[0]:
+        return {"ok": False, "error": valid[1], "node_errors": valid[3]}, 400
+
+    extra_data = {
+        "create_time": int(time.time() * 1000),
+        "cutlery_remote_clip": {"kind": kind},
+    }
+    sensitive = {}
+    for key in getattr(execution, "SENSITIVE_EXTRA_DATA_KEYS", []):
+        if key in extra_data:
+            sensitive[key] = extra_data.pop(key)
+    number = float(getattr(server, "number", 0))
+    server.number = number + 1
+    prompt_queue.put((number, prompt_id, prompt, extra_data, valid[2], sensitive))
+
+    deadline = asyncio.get_running_loop().time() + _remote_clip_encode_timeout()
+    try:
+        while True:
+            history = prompt_queue.get_history(prompt_id=prompt_id)
+            entry = history.get(prompt_id) if isinstance(history, dict) else None
+            if isinstance(entry, dict):
+                status = entry.get("status")
+                if not isinstance(status, dict) or status.get("status_str") != "success":
+                    return {"ok": False, "prompt_id": prompt_id, "error": _remote_clip_job_error(status)}, 500
+                outputs = entry.get("outputs")
+                node_output = outputs.get(REMOTE_CLIP_JOB_NODE_ID) if isinstance(outputs, dict) else None
+                bundles = node_output.get(REMOTE_CLIP_JOB_UI_KEY) if isinstance(node_output, dict) else None
+                bundle = bundles[-1] if isinstance(bundles, list) and bundles else None
+                if not isinstance(bundle, dict):
+                    return {
+                        "ok": False,
+                        "prompt_id": prompt_id,
+                        "error": "Remote CLIP job completed without a conditioning bundle.",
+                    }, 500
+                return {"ok": True, "prompt_id": prompt_id, "conditioning": bundle}, 200
+
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                _cancel_remote_clip_job(prompt_queue, prompt_id)
+                return {"ok": False, "prompt_id": prompt_id, "error": "Remote CLIP job timed out."}, 504
+            await asyncio.sleep(min(0.1, remaining))
+    except asyncio.CancelledError:
+        _cancel_remote_clip_job(prompt_queue, prompt_id)
+        raise
+
+
 def register_remote_clip_routes() -> None:
     if PromptServer is None or web is None:
         return
@@ -2148,7 +2304,8 @@ def register_remote_clip_routes() -> None:
             return _json_response(payload or {}, status=status)
         body = await _request_json(request)
         try:
-            return _json_response(encode_remote_clip_text(body))
+            payload, status = await _submit_remote_clip_job("single", body)
+            return _json_response(payload, status=status)
         except ValueError as error:
             return _json_response({"ok": False, "error": str(error)}, status=400)
         except Exception as error:
@@ -2165,7 +2322,8 @@ def register_remote_clip_routes() -> None:
             return _json_response(payload or {}, status=status)
         body = await _request_json(request)
         try:
-            return _json_response(encode_remote_dual_clip_text(body))
+            payload, status = await _submit_remote_clip_job("dual", body)
+            return _json_response(payload, status=status)
         except ValueError as error:
             return _json_response({"ok": False, "error": str(error)}, status=400)
         except Exception as error:
@@ -2183,7 +2341,8 @@ def register_remote_clip_routes() -> None:
         try:
             _raise_request_body_limit(request, _remote_clip_file_upload_limit_bytes())
             body = await _request_json(request)
-            return _json_response(encode_remote_qwen_image_edit_plus_text(body))
+            payload, status = await _submit_remote_clip_job("qwen_image_edit_plus", body)
+            return _json_response(payload, status=status)
         except ValueError as error:
             return _json_response({"ok": False, "error": str(error)}, status=400)
         except Exception as error:
@@ -2718,12 +2877,18 @@ NODE_CLASS_MAPPINGS = {
     "CutleryRemoteClipTextEncode": CutleryRemoteClipTextEncode,
     "CutleryRemoteDualClipTextEncode": CutleryRemoteDualClipTextEncode,
     "CutleryRemoteTextEncodeQwenImageEditPlus": CutleryRemoteTextEncodeQwenImageEditPlus,
+    "CutleryRemoteClipTextEncodeJob": CutleryRemoteClipTextEncodeJob,
+    "CutleryRemoteDualClipTextEncodeJob": CutleryRemoteDualClipTextEncodeJob,
+    "CutleryRemoteQwenImageEditPlusEncodeJob": CutleryRemoteQwenImageEditPlusEncodeJob,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "CutleryRemoteClipTextEncode": "Remote CLIP Text Encode",
     "CutleryRemoteDualClipTextEncode": "Remote Dual CLIP Text Encode",
     "CutleryRemoteTextEncodeQwenImageEditPlus": "Remote TextEncodeQwenImageEditPlus",
+    "CutleryRemoteClipTextEncodeJob": "Remote CLIP Text Encode",
+    "CutleryRemoteDualClipTextEncodeJob": "Remote Dual CLIP Text Encode",
+    "CutleryRemoteQwenImageEditPlusEncodeJob": "Remote Qwen Image Edit Text Encode",
 }
 
 
