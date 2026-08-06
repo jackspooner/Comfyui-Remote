@@ -2455,7 +2455,11 @@ class CutleryRemoteClipTextEncode:
             "prompt": ("STRING", {"multiline": True, "tooltip": "Prompt text to encode on the remote ComfyUI instance."}),
             "text_encoder": (
                 text_encoders,
-                {"default": default_text_encoder, "tooltip": "Text encoder file listed by the remote ComfyUI instance."},
+                {
+                    "default": default_text_encoder,
+                    "defaultInput": True,
+                    "tooltip": "Text encoder file listed by the remote ComfyUI instance. A connected STRING or Primitive value overrides this picker.",
+                },
             ),
             "clip_type": (clip_types, {"default": "stable_diffusion", "tooltip": "ComfyUI CLIP loader type used on the remote instance."}),
         }
@@ -2533,12 +2537,12 @@ class CutleryRemoteDualClipTextEncode:
         clip_name1_widget = (
             _remote_model_placeholder_combo(default_text_encoder, "First CLIP/text encoder file for the remote dual CLIP loader.")
             if _is_remote_clip_client_mode()
-            else (text_encoders, {"default": default_text_encoder, "tooltip": "First CLIP/text encoder file for the remote dual CLIP loader."})
+            else (text_encoders, {"default": default_text_encoder, "defaultInput": True, "tooltip": "First CLIP/text encoder file for the remote dual CLIP loader. A connected STRING or Primitive value overrides this picker."})
         )
         clip_name2_widget = (
             _remote_model_placeholder_combo(default_text_encoder, "Second CLIP/text encoder or projection file for the remote dual CLIP loader.")
             if _is_remote_clip_client_mode()
-            else (text_encoders, {"default": default_text_encoder, "tooltip": "Second CLIP/text encoder or projection file for the remote dual CLIP loader."})
+            else (text_encoders, {"default": default_text_encoder, "defaultInput": True, "tooltip": "Second CLIP/text encoder or projection file for the remote dual CLIP loader. A connected STRING or Primitive value overrides this picker."})
         )
         required: dict[str, Any] = {
             "prompt": ("STRING", {"multiline": True, "tooltip": "Prompt text to encode on the remote ComfyUI instance."}),
@@ -2620,7 +2624,7 @@ class CutleryRemoteTextEncodeQwenImageEditPlus:
         text_encoder_widget = (
             _remote_model_placeholder_combo(text_encoders[0], "Qwen image text encoder file listed by the remote ComfyUI instance.")
             if _is_remote_clip_client_mode()
-            else (text_encoders, {"default": text_encoders[0], "tooltip": "Qwen image text encoder file listed by the remote ComfyUI instance."})
+            else (text_encoders, {"default": text_encoders[0], "defaultInput": True, "tooltip": "Qwen image text encoder file listed by the remote ComfyUI instance. A connected STRING or Primitive value overrides this picker."})
         )
         vae_widget = (
             _remote_model_placeholder_combo(vaes[0], "VAE file listed by the remote ComfyUI instance for Qwen reference latents.")
