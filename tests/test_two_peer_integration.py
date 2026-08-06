@@ -9,6 +9,7 @@ real peers.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import secrets
@@ -38,23 +39,31 @@ TOKEN_ENV = "CUTLERY_REMOTE_TWO_PEER_TOKEN"
 GROUP_RUN_BODY_ENV = "CUTLERY_REMOTE_TWO_PEER_GROUP_RUN_BODY"
 BOUNDARY_GROUP_RUN_BODY_ENV = "CUTLERY_REMOTE_TWO_PEER_BOUNDARY_GROUP_RUN_BODY"
 PRELOAD_BODY_ENV = "CUTLERY_REMOTE_TWO_PEER_PRELOAD_BODY"
-CANCEL_PROMPT_ID_ENV = "CUTLERY_REMOTE_TWO_PEER_CANCEL_PROMPT_ID"
+CANCEL_FIXTURE_ENV = "CUTLERY_REMOTE_TWO_PEER_CANCEL_FIXTURE"
 STREAM_BODY_ENV = "CUTLERY_REMOTE_TWO_PEER_STREAM_BODY"
 CLIP_TEXT_ENCODE_BODY_ENV = "CUTLERY_REMOTE_TWO_PEER_CLIP_TEXT_ENCODE_BODY"
 CLIP_DUAL_TEXT_ENCODE_BODY_ENV = "CUTLERY_REMOTE_TWO_PEER_CLIP_DUAL_TEXT_ENCODE_BODY"
 CLIP_QWEN_IMAGE_EDIT_BODY_ENV = "CUTLERY_REMOTE_TWO_PEER_CLIP_QWEN_IMAGE_EDIT_BODY"
 CLIP_LORA_TEXT_ENCODE_BODY_ENV = "CUTLERY_REMOTE_TWO_PEER_CLIP_LORA_TEXT_ENCODE_BODY"
+LORA_MATERIALIZE_FIXTURE_ENV = "CUTLERY_REMOTE_TWO_PEER_LORA_MATERIALIZE_FIXTURE"
+LORA_SIZE_LIMIT_FIXTURE_ENV = "CUTLERY_REMOTE_TWO_PEER_LORA_SIZE_LIMIT_FIXTURE"
+LORA_HASH_MISMATCH_FIXTURE_ENV = "CUTLERY_REMOTE_TWO_PEER_LORA_HASH_MISMATCH_FIXTURE"
+LORA_CLEANUP_FIXTURE_ENV = "CUTLERY_REMOTE_TWO_PEER_LORA_CLEANUP_FIXTURE"
 
 RELEASE_FIXTURE_ENVS = (
     GROUP_RUN_BODY_ENV,
     BOUNDARY_GROUP_RUN_BODY_ENV,
     PRELOAD_BODY_ENV,
-    CANCEL_PROMPT_ID_ENV,
+    CANCEL_FIXTURE_ENV,
     STREAM_BODY_ENV,
     CLIP_TEXT_ENCODE_BODY_ENV,
     CLIP_DUAL_TEXT_ENCODE_BODY_ENV,
     CLIP_QWEN_IMAGE_EDIT_BODY_ENV,
     CLIP_LORA_TEXT_ENCODE_BODY_ENV,
+    LORA_MATERIALIZE_FIXTURE_ENV,
+    LORA_SIZE_LIMIT_FIXTURE_ENV,
+    LORA_HASH_MISMATCH_FIXTURE_ENV,
+    LORA_CLEANUP_FIXTURE_ENV,
 )
 
 
@@ -101,12 +110,10 @@ class TwoPeerConfig:
                 "This gate does not read peer .env files or infer credentials."
             )
         if release_mode:
-            for name in RELEASE_FIXTURE_ENVS:
-                if name != CANCEL_PROMPT_ID_ENV:
-                    try:
-                        _json_body(os.environ[name], name)
-                    except AssertionError as exc:
-                        raise ValueError(str(exc)) from exc
+            try:
+                _validate_release_fixtures()
+            except AssertionError as exc:
+                raise ValueError(str(exc)) from exc
         return cls(
             local_url=_origin(os.environ[LOCAL_URL_ENV], LOCAL_URL_ENV),
             remote_url=_origin(os.environ[REMOTE_URL_ENV], REMOTE_URL_ENV),
@@ -132,6 +139,123 @@ def _fixture_body(name: str, *, release_mode: bool) -> dict[str, Any] | None:
             raise AssertionError(f"{RELEASE_ENV}=1 requires reviewed fixture {name}.")
         return None
     return _json_body(raw, name)
+
+
+def _fixture_object(name: str) -> dict[str, Any]:
+    return _json_body(os.environ[name], name)
+
+
+def _required_object(value: object, name: str, field: str) -> dict[str, Any]:
+    if not isinstance(value, dict) or not value:
+        raise AssertionError(f"{name}.{field} must be a non-empty JSON object.")
+    return value
+
+
+def _required_string(value: object, name: str, field: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise AssertionError(f"{name}.{field} must be a non-empty string.")
+    return value.strip()
+
+
+def _required_sha256(value: object, name: str, field: str = "sha256") -> str:
+    digest = _required_string(value, name, field).lower()
+    if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
+        raise AssertionError(f"{name}.{field} must be a lowercase SHA-256 digest.")
+    return digest
+
+
+def _fixture_expectation(value: object, name: str, field: str = "expect") -> dict[str, Any]:
+    expectation = _required_object(value, name, field)
+    if set(expectation) == {"ok"}:
+        raise AssertionError(f"{name}.{field} must include evidence beyond the response envelope.")
+    return expectation
+
+
+def _preload_fixture(name: str) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    fixture = _fixture_object(name)
+    return (
+        _required_object(fixture.get("request"), name, "request"),
+        _fixture_expectation(fixture.get("expect_cold"), name, "expect_cold"),
+        _fixture_expectation(fixture.get("expect_warm"), name, "expect_warm"),
+    )
+
+
+def _cancellation_fixture(name: str) -> tuple[str, dict[str, Any]]:
+    fixture = _fixture_object(name)
+    prompt_id = _required_string(fixture.get("prompt_id"), name, "prompt_id")
+    expectation = _fixture_expectation(fixture.get("expect"), name)
+    if expectation.get("cancellation_recorded") is not True:
+        raise AssertionError(f"{name}.expect.cancellation_recorded must be true.")
+    if not any(isinstance(expectation.get(key), bool) for key in ("removed_from_queue", "interrupted_running", "cancelled")):
+        raise AssertionError(
+            f"{name}.expect must declare one of removed_from_queue, interrupted_running, or cancelled."
+        )
+    return prompt_id, expectation
+
+
+def _lora_upload_fixture(name: str) -> dict[str, Any]:
+    fixture = _fixture_object(name)
+    _required_string(fixture.get("path"), name, "path")
+    _required_string(fixture.get("name"), name, "name")
+    _required_sha256(fixture.get("sha256"), name)
+    status = fixture.get("expect_status")
+    if not isinstance(status, int) or not 100 <= status <= 599:
+        raise AssertionError(f"{name}.expect_status must be an HTTP status integer.")
+    _fixture_expectation(fixture.get("expect"), name)
+    error_contains = fixture.get("error_contains")
+    if status >= 400 and (not isinstance(error_contains, str) or not error_contains.strip()):
+        raise AssertionError(f"{name}.error_contains must describe the expected rejection.")
+    if status < 400 and error_contains is not None:
+        raise AssertionError(f"{name}.error_contains is only valid for rejection fixtures.")
+    return fixture
+
+
+def _lora_cleanup_fixture(name: str) -> dict[str, Any]:
+    fixture = _fixture_object(name)
+    expectation = _fixture_expectation(fixture.get("expect"), name)
+    if not isinstance(expectation.get("deleted_count"), int) or expectation["deleted_count"] < 1:
+        raise AssertionError(f"{name}.expect.deleted_count must prove cleanup removed the test LoRA.")
+    return fixture
+
+
+def _validate_release_fixtures() -> None:
+    for name in (
+        GROUP_RUN_BODY_ENV,
+        BOUNDARY_GROUP_RUN_BODY_ENV,
+        STREAM_BODY_ENV,
+        CLIP_TEXT_ENCODE_BODY_ENV,
+        CLIP_DUAL_TEXT_ENCODE_BODY_ENV,
+        CLIP_QWEN_IMAGE_EDIT_BODY_ENV,
+        CLIP_LORA_TEXT_ENCODE_BODY_ENV,
+    ):
+        _fixture_object(name)
+    _preload_fixture(PRELOAD_BODY_ENV)
+    _cancellation_fixture(CANCEL_FIXTURE_ENV)
+    materialize = _lora_upload_fixture(LORA_MATERIALIZE_FIXTURE_ENV)
+    if materialize["expect_status"] != 200:
+        raise AssertionError(f"{LORA_MATERIALIZE_FIXTURE_ENV}.expect_status must be 200.")
+    if not _required_string(materialize.get("name"), LORA_MATERIALIZE_FIXTURE_ENV, "name").replace("\\", "/").startswith("cutlery_remote/"):
+        raise AssertionError(f"{LORA_MATERIALIZE_FIXTURE_ENV}.name must be under cutlery_remote/ so cleanup is verifiable.")
+    size_limit = _lora_upload_fixture(LORA_SIZE_LIMIT_FIXTURE_ENV)
+    if size_limit["expect_status"] != 413:
+        raise AssertionError(f"{LORA_SIZE_LIMIT_FIXTURE_ENV}.expect_status must be 413.")
+    hash_mismatch = _lora_upload_fixture(LORA_HASH_MISMATCH_FIXTURE_ENV)
+    if hash_mismatch["expect_status"] != 400:
+        raise AssertionError(f"{LORA_HASH_MISMATCH_FIXTURE_ENV}.expect_status must be 400.")
+    _lora_cleanup_fixture(LORA_CLEANUP_FIXTURE_ENV)
+
+
+def _assert_expected_evidence(actual: object, expected: object, context: str) -> None:
+    if isinstance(expected, dict):
+        if not isinstance(actual, dict):
+            raise AssertionError(f"{context} expected an object but received {type(actual).__name__}.")
+        for key, expected_value in expected.items():
+            if key not in actual:
+                raise AssertionError(f"{context} did not include expected field {key!r}.")
+            _assert_expected_evidence(actual[key], expected_value, f"{context}.{key}")
+        return
+    if actual != expected:
+        raise AssertionError(f"{context} expected {expected!r}, received {actual!r}.")
 
 
 def _request_json(
@@ -165,6 +289,53 @@ def _request_json(
         raise AssertionError(f"{method} {url} did not return a JSON response (HTTP {status}).") from error
     if not isinstance(payload, dict):
         raise AssertionError(f"{method} {url} returned a non-object JSON response (HTTP {status}).")
+    return status, payload
+
+
+def _request_lora_upload(
+    url: str,
+    *,
+    token: str,
+    fixture: dict[str, Any],
+    expected_sha256: str | None = None,
+) -> tuple[int, dict[str, Any]]:
+    source = Path(_required_string(fixture.get("path"), "LoRA upload fixture", "path"))
+    if not source.is_file():
+        raise AssertionError(f"LoRA upload fixture path is not a file: {source}")
+    expected_digest = _required_sha256(fixture.get("sha256"), "LoRA upload fixture")
+    digest = hashlib.sha256()
+    with source.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    actual_digest = digest.hexdigest()
+    if actual_digest != expected_digest:
+        raise AssertionError("LoRA upload fixture contents did not match its reviewed SHA-256.")
+
+    headers = {
+        "Accept": "application/json",
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/octet-stream",
+        "Content-Length": str(source.stat().st_size),
+        "X-Cutlery-Lora-Name": urllib.parse.quote(_required_string(fixture.get("name"), "LoRA upload fixture", "name")),
+        "X-Cutlery-Lora-SHA256": expected_sha256 or actual_digest,
+    }
+    with source.open("rb") as handle:
+        request = urllib.request.Request(url, data=handle, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(request, timeout=600.0) as response:
+                status = int(response.status)
+                raw = response.read()
+        except urllib.error.HTTPError as error:
+            status = int(error.code)
+            raw = error.read()
+        except urllib.error.URLError as error:
+            raise AssertionError(f"POST {url} did not reach its configured peer: {error.reason}") from error
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise AssertionError(f"POST {url} did not return a JSON response (HTTP {status}).") from error
+    if not isinstance(payload, dict):
+        raise AssertionError(f"POST {url} returned a non-object JSON response (HTTP {status}).")
     return status, payload
 
 
@@ -246,12 +417,12 @@ class TwoPeerIntegrationTests(_ConfiguredTwoPeerGate, unittest.TestCase):
         self._run_group_fixture(BOUNDARY_GROUP_RUN_BODY_ENV, "boundary group", require_outputs=True)
 
     def test_preload_or_materialization_fixture_runs_cold_and_warm(self):
-        body = _fixture_body(PRELOAD_BODY_ENV, release_mode=self.config.release_mode)
-        if body is None:
+        if not os.environ.get(PRELOAD_BODY_ENV, "").strip():
             self.skipTest(
                 f"Set {PRELOAD_BODY_ENV} to a reviewed preload request to check cold/warm materialization on the remote peer."
             )
-        for state in ("cold", "warm"):
+        body, cold_expectation, warm_expectation = _preload_fixture(PRELOAD_BODY_ENV)
+        for state, expectation in (("cold", cold_expectation), ("warm", warm_expectation)):
             with self.subTest(state=state):
                 status, payload = _request_json(
                     "POST",
@@ -262,13 +433,14 @@ class TwoPeerIntegrationTests(_ConfiguredTwoPeerGate, unittest.TestCase):
                 )
                 self.assertEqual(status, 200)
                 self.assertTrue(payload.get("ok"), payload.get("error") or f"{state} remote preload fixture failed")
+                _assert_expected_evidence(payload, expectation, f"{state} preload response")
 
     def test_prompt_cancellation_fixture(self):
-        prompt_id = os.environ.get(CANCEL_PROMPT_ID_ENV, "").strip()
-        if not prompt_id:
+        if not os.environ.get(CANCEL_FIXTURE_ENV, "").strip():
             self.skipTest(
-                f"Set {CANCEL_PROMPT_ID_ENV} only for a dedicated pending test job to verify prompt-specific cancellation."
+                f"Set {CANCEL_FIXTURE_ENV} only for a dedicated pending test job to verify prompt-specific cancellation."
             )
+        prompt_id, expectation = _cancellation_fixture(CANCEL_FIXTURE_ENV)
         quoted_id = urllib.parse.quote(prompt_id, safe="")
         status, payload = _request_json(
             "POST",
@@ -279,7 +451,59 @@ class TwoPeerIntegrationTests(_ConfiguredTwoPeerGate, unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertTrue(payload.get("ok"), payload.get("error") or "prompt cancellation fixture failed")
         self.assertEqual(payload.get("remote_prompt_id"), prompt_id)
-        self.assertTrue(payload.get("cancellation_recorded"))
+        _assert_expected_evidence(payload, expectation, "prompt cancellation response")
+
+    def test_lora_materialization_size_hash_and_cleanup_fixtures(self):
+        fixture_names = (
+            LORA_MATERIALIZE_FIXTURE_ENV,
+            LORA_SIZE_LIMIT_FIXTURE_ENV,
+            LORA_HASH_MISMATCH_FIXTURE_ENV,
+            LORA_CLEANUP_FIXTURE_ENV,
+        )
+        if not all(os.environ.get(name, "").strip() for name in fixture_names):
+            self.skipTest(
+                "Set the reviewed LoRA materialization, size-limit, hash-mismatch, and cleanup fixtures to verify the lifecycle."
+            )
+        materialize = _lora_upload_fixture(LORA_MATERIALIZE_FIXTURE_ENV)
+        size_limit = _lora_upload_fixture(LORA_SIZE_LIMIT_FIXTURE_ENV)
+        hash_mismatch = _lora_upload_fixture(LORA_HASH_MISMATCH_FIXTURE_ENV)
+        cleanup = _lora_cleanup_fixture(LORA_CLEANUP_FIXTURE_ENV)
+        endpoint = f"{self.config.remote_url}/cutlery/remote/clip/loras/materialize"
+
+        status, payload = _request_lora_upload(endpoint, token=self.config.token, fixture=materialize)
+        self.assertEqual(status, materialize["expect_status"])
+        self.assertEqual(payload.get("name"), materialize["name"])
+        self.assertEqual(payload.get("sha256"), materialize["sha256"])
+        self.assertEqual(payload.get("size"), Path(materialize["path"]).stat().st_size)
+        self.assertTrue(payload.get("materialized"))
+        _assert_expected_evidence(payload, materialize["expect"], "LoRA materialization response")
+
+        status, payload = _request_lora_upload(endpoint, token=self.config.token, fixture=size_limit)
+        self.assertEqual(status, size_limit["expect_status"])
+        self.assertIn(str(size_limit["error_contains"]).lower(), str(payload.get("error") or "").lower())
+        _assert_expected_evidence(payload, size_limit["expect"], "LoRA size-limit response")
+
+        actual_digest = _required_sha256(hash_mismatch.get("sha256"), LORA_HASH_MISMATCH_FIXTURE_ENV)
+        incorrect_digest = "0" * 64 if actual_digest != "0" * 64 else "1" * 64
+        status, payload = _request_lora_upload(
+            endpoint,
+            token=self.config.token,
+            fixture=hash_mismatch,
+            expected_sha256=incorrect_digest,
+        )
+        self.assertEqual(status, hash_mismatch["expect_status"])
+        self.assertIn(str(hash_mismatch["error_contains"]).lower(), str(payload.get("error") or "").lower())
+        _assert_expected_evidence(payload, hash_mismatch["expect"], "LoRA hash-mismatch response")
+
+        status, payload = _request_json(
+            "POST",
+            f"{self.config.remote_url}/cutlery/remote/clip/loras/clear",
+            token=self.config.token,
+            body={},
+            timeout_seconds=600.0,
+        )
+        self.assertEqual(status, 200)
+        _assert_expected_evidence(payload, cleanup["expect"], "LoRA cleanup response")
 
     def _run_remote_clip_fixture(self, fixture_env: str, path: str, label: str):
         body = _fixture_body(fixture_env, release_mode=self.config.release_mode)
@@ -377,6 +601,53 @@ class TwoPeerReleaseConfigurationTests(unittest.TestCase):
             TOKEN_ENV: "test-token",
         }
 
+    def _release_fixtures(self) -> dict[str, str]:
+        return {
+            GROUP_RUN_BODY_ENV: "{}",
+            BOUNDARY_GROUP_RUN_BODY_ENV: "{}",
+            PRELOAD_BODY_ENV: json.dumps(
+                {"request": {"prompt_id": "preload-release"}, "expect_cold": {"prompt_id": "preload-release"}, "expect_warm": {"prompt_id": "preload-release"}}
+            ),
+            CANCEL_FIXTURE_ENV: json.dumps(
+                {"prompt_id": "pending-release-job", "expect": {"cancellation_recorded": True, "cancelled": True}}
+            ),
+            STREAM_BODY_ENV: "{}",
+            CLIP_TEXT_ENCODE_BODY_ENV: "{}",
+            CLIP_DUAL_TEXT_ENCODE_BODY_ENV: "{}",
+            CLIP_QWEN_IMAGE_EDIT_BODY_ENV: "{}",
+            CLIP_LORA_TEXT_ENCODE_BODY_ENV: "{}",
+            LORA_MATERIALIZE_FIXTURE_ENV: json.dumps(
+                {
+                    "path": "C:/release-fixtures/materialize.safetensors",
+                    "name": "cutlery_remote/release-materialize.safetensors",
+                    "sha256": "a" * 64,
+                    "expect_status": 200,
+                    "expect": {"name": "cutlery_remote/release-materialize.safetensors", "materialized": True},
+                }
+            ),
+            LORA_SIZE_LIMIT_FIXTURE_ENV: json.dumps(
+                {
+                    "path": "C:/release-fixtures/oversize.safetensors",
+                    "name": "cutlery_remote/release-oversize.safetensors",
+                    "sha256": "b" * 64,
+                    "expect_status": 413,
+                    "expect": {"error": "Uploaded LoRA is too large."},
+                    "error_contains": "too large",
+                }
+            ),
+            LORA_HASH_MISMATCH_FIXTURE_ENV: json.dumps(
+                {
+                    "path": "C:/release-fixtures/hash-mismatch.safetensors",
+                    "name": "cutlery_remote/release-hash-mismatch.safetensors",
+                    "sha256": "c" * 64,
+                    "expect_status": 400,
+                    "expect": {"error": "Uploaded LoRA SHA-256 did not match the expected hash."},
+                    "error_contains": "sha-256",
+                }
+            ),
+            LORA_CLEANUP_FIXTURE_ENV: json.dumps({"expect": {"deleted_count": 1}}),
+        }
+
     def test_non_release_gate_does_not_require_execution_fixtures(self):
         with patch.dict(os.environ, self._base_environment(), clear=True):
             config = TwoPeerConfig.from_environment()
@@ -394,42 +665,55 @@ class TwoPeerReleaseConfigurationTests(unittest.TestCase):
 
     def test_release_gate_accepts_all_reviewed_execution_fixtures(self):
         environment = self._base_environment()
-        environment.update(
-            {
-                RELEASE_ENV: "1",
-                GROUP_RUN_BODY_ENV: "{}",
-                BOUNDARY_GROUP_RUN_BODY_ENV: "{}",
-                PRELOAD_BODY_ENV: "{}",
-                CANCEL_PROMPT_ID_ENV: "pending-release-job",
-                STREAM_BODY_ENV: "{}",
-                CLIP_TEXT_ENCODE_BODY_ENV: "{}",
-                CLIP_DUAL_TEXT_ENCODE_BODY_ENV: "{}",
-                CLIP_QWEN_IMAGE_EDIT_BODY_ENV: "{}",
-                CLIP_LORA_TEXT_ENCODE_BODY_ENV: "{}",
-            }
-        )
+        environment.update(self._release_fixtures())
+        environment[RELEASE_ENV] = "1"
         with patch.dict(os.environ, environment, clear=True):
             config = TwoPeerConfig.from_environment()
         self.assertTrue(config.release_mode)
 
     def test_release_gate_rejects_a_malformed_fixture_before_peer_setup(self):
         environment = self._base_environment()
+        environment.update(self._release_fixtures())
+        environment.update({RELEASE_ENV: "1", GROUP_RUN_BODY_ENV: "not-json"})
+        with patch.dict(os.environ, environment, clear=True):
+            with self.assertRaisesRegex(ValueError, "must contain a JSON object"):
+                TwoPeerConfig.from_environment()
+
+    def test_release_gate_rejects_fixture_without_cold_warm_or_cancellation_evidence(self):
+        environment = self._base_environment()
+        environment.update(self._release_fixtures())
         environment.update(
             {
                 RELEASE_ENV: "1",
-                GROUP_RUN_BODY_ENV: "not-json",
-                BOUNDARY_GROUP_RUN_BODY_ENV: "{}",
-                PRELOAD_BODY_ENV: "{}",
-                CANCEL_PROMPT_ID_ENV: "pending-release-job",
-                STREAM_BODY_ENV: "{}",
-                CLIP_TEXT_ENCODE_BODY_ENV: "{}",
-                CLIP_DUAL_TEXT_ENCODE_BODY_ENV: "{}",
-                CLIP_QWEN_IMAGE_EDIT_BODY_ENV: "{}",
-                CLIP_LORA_TEXT_ENCODE_BODY_ENV: "{}",
+                PRELOAD_BODY_ENV: json.dumps(
+                    {"request": {"prompt_id": "preload-release"}, "expect_cold": {"ok": True}, "expect_warm": {"ok": True}}
+                ),
             }
         )
         with patch.dict(os.environ, environment, clear=True):
-            with self.assertRaisesRegex(ValueError, "must contain a JSON object"):
+            with self.assertRaisesRegex(ValueError, "evidence beyond the response envelope"):
+                TwoPeerConfig.from_environment()
+
+        environment.update(
+            {
+                PRELOAD_BODY_ENV: self._release_fixtures()[PRELOAD_BODY_ENV],
+                CANCEL_FIXTURE_ENV: json.dumps(
+                    {"prompt_id": "pending-release-job", "expect": {"cancellation_recorded": True}}
+                ),
+            }
+        )
+        with patch.dict(os.environ, environment, clear=True):
+            with self.assertRaisesRegex(ValueError, "must declare one of"):
+                TwoPeerConfig.from_environment()
+
+    def test_release_gate_rejects_lora_fixture_without_rejection_evidence(self):
+        environment = self._base_environment()
+        environment.update(self._release_fixtures())
+        size_fixture = json.loads(environment[LORA_SIZE_LIMIT_FIXTURE_ENV])
+        size_fixture.pop("error_contains")
+        environment.update({RELEASE_ENV: "1", LORA_SIZE_LIMIT_FIXTURE_ENV: json.dumps(size_fixture)})
+        with patch.dict(os.environ, environment, clear=True):
+            with self.assertRaisesRegex(ValueError, "error_contains"):
                 TwoPeerConfig.from_environment()
 
 

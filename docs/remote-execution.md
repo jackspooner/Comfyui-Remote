@@ -268,9 +268,11 @@ The always-on checks read each peer's feature descriptor, confirm the receiver's
 
 The portable suite keeps state-changing checks optional. A release candidate must
 set `CUTLERY_REMOTE_TWO_PEER_RELEASE=1`; that mode refuses to make a network
-request until every fixture below is present. Supply only reviewed payloads
-against dedicated test data and a dedicated pending cancellation job. The
-preload fixture runs twice, once for the cold path and again for the warm path.
+request until every fixture below is present and structurally valid. Supply
+only reviewed payloads against dedicated test data and a dedicated pending
+cancellation job. The preload fixture runs twice, once for the cold path and
+again for the warm path; each run must match its fixture's independently
+reviewed evidence.
 
 ```powershell
 $env:CUTLERY_REMOTE_TWO_PEER_RELEASE = "1"
@@ -281,21 +283,21 @@ $env:CUTLERY_REMOTE_TWO_PEER_RELEASE = "1"
 | `CUTLERY_REMOTE_TWO_PEER_GROUP_RUN_BODY` | Runs one compiled generic group request on the receiving peer. |
 | `CUTLERY_REMOTE_TWO_PEER_BOUNDARY_GROUP_RUN_BODY` | Runs a compiled group with reviewed supported tensor-tree/WF3 boundary inputs and outputs, including the required output-bundle assertion. |
 | `CUTLERY_REMOTE_TWO_PEER_STREAM_BODY` | Opens the authenticated progress WebSocket, submits one reviewed progress-emitting group request, and requires streamed progress plus a successful terminal result. |
-| `CUTLERY_REMOTE_TWO_PEER_PRELOAD_BODY` | Calls the peer preload route twice with the same reviewed request to prove cold and warm materialization/preload behavior. |
-| `CUTLERY_REMOTE_TWO_PEER_CANCEL_PROMPT_ID` | Cancels one dedicated pending remote-group prompt and verifies prompt-specific cancellation. Never point this at a user or production job. |
+| `CUTLERY_REMOTE_TWO_PEER_PRELOAD_BODY` | An envelope with `request`, `expect_cold`, and `expect_warm` objects. The peer preload route runs twice with `request`; both expected evidence objects must match their respective responses. |
+| `CUTLERY_REMOTE_TWO_PEER_CANCEL_FIXTURE` | An envelope with `prompt_id` and `expect`. `expect` must require `cancellation_recorded: true` plus the reviewed queued/running termination outcome. Never point this at a user or production job. |
 | `CUTLERY_REMOTE_TWO_PEER_CLIP_TEXT_ENCODE_BODY` | Runs the single-encoder Remote CLIP text-encode route and requires a conditioning bundle. |
 | `CUTLERY_REMOTE_TWO_PEER_CLIP_DUAL_TEXT_ENCODE_BODY` | Runs the dual-encoder Remote CLIP route and requires a conditioning bundle. |
 | `CUTLERY_REMOTE_TWO_PEER_CLIP_QWEN_IMAGE_EDIT_BODY` | Runs the reviewed Qwen image-edit Remote CLIP route and requires a conditioning bundle. |
-| `CUTLERY_REMOTE_TWO_PEER_CLIP_LORA_TEXT_ENCODE_BODY` | Runs text encoding with a reviewed, already-materialized LoRA chain and requires a conditioning bundle. The release operator must use a dedicated materialized LoRA and inspect cleanup separately. |
+| `CUTLERY_REMOTE_TWO_PEER_CLIP_LORA_TEXT_ENCODE_BODY` | Runs text encoding with a reviewed, already-materialized LoRA chain and requires a conditioning bundle. |
+| `CUTLERY_REMOTE_TWO_PEER_LORA_MATERIALIZE_FIXTURE` | Upload fixture for a disposable `cutlery_remote/...` LoRA. Requires `path`, `name`, `sha256`, `expect_status: 200`, and matching response evidence. The gate verifies the source digest before upload. |
+| `CUTLERY_REMOTE_TWO_PEER_LORA_SIZE_LIMIT_FIXTURE` | Disposable oversized upload fixture. Requires the same file fields, an expected rejection status, `error_contains`, and matching response evidence. Configure the disposable receiver's limit so it is rejected before promotion. |
+| `CUTLERY_REMOTE_TWO_PEER_LORA_HASH_MISMATCH_FIXTURE` | Disposable upload fixture for a deliberate SHA-256 header mismatch. Requires the same fields, expected rejection status, `error_contains`, and matching response evidence. The gate verifies the fixture file first, then sends an intentionally wrong declared hash. |
+| `CUTLERY_REMOTE_TWO_PEER_LORA_CLEANUP_FIXTURE` | An envelope with `expect`, including `deleted_count` of at least one, proving the dedicated materialized LoRA was removed after the rejection checks. |
 
-Every `*_BODY` value is a JSON object, not a path. Keep release fixture files
-and their preparation steps outside this repository so they cannot accidentally
-ship in the public archive. The gate does not read a peer's `.env`, infer a
-token, or create fixture data.
-
-`CUTLERY_REMOTE_TWO_PEER_RELEASE=1` covers execution interoperability, not the
-destructive materialization and cleanup lifecycle. Before an immutable release,
-the release operator must separately approve and record the result of the
-materialization, size-limit, hash-mismatch, and cleanup checks on a disposable
-peer. Those operations intentionally remain outside this automated gate because
-they write model files or clear shared transient staging.
+Every `*_BODY` and `*_FIXTURE` value is a JSON object, not a path. LoRA fixture
+objects refer to an external disposable file via their `path` field; keep those
+files and all preparation steps outside this repository so they cannot
+accidentally ship in the public archive. The gate does not read a peer's `.env`,
+infer a token, or create fixture data. The LoRA lifecycle checks intentionally
+write and clear only a dedicated `cutlery_remote/...` test LoRA on a disposable
+peer.
