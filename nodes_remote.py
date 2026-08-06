@@ -380,6 +380,24 @@ def _remote_group_smoke_timeout(timeout_seconds: float) -> float:
     return max(0.1, min(15.0, float(timeout_seconds or 15.0)))
 
 
+def _log_remote_group_job_finished(
+    base_url: str,
+    remote_prompt_id: str,
+    started_at: float,
+    *,
+    outcome: str,
+) -> None:
+    elapsed_seconds = time.perf_counter() - started_at
+    log = LOGGER.info if outcome == "completed" else LOGGER.warning
+    log(
+        "[Cutlery Remote] Remote group %s target=%s prompt_id=%s duration_seconds=%.2f",
+        outcome,
+        base_url,
+        remote_prompt_id,
+        elapsed_seconds,
+    )
+
+
 def _log_remote_group_start_and_smoke(
     base_url: str,
     workflow: Any,
@@ -2858,50 +2876,60 @@ class CutleryRemoteGroupExecutor:
             token=token,
             timeout_seconds=timeout,
         )
-        if not progress_aware:
-            interrupt_sent = False
+        remote_job_started = time.perf_counter()
+        try:
+            if not progress_aware:
+                interrupt_sent = False
 
-            def interrupt_remote() -> None:
-                nonlocal interrupt_sent
-                if interrupt_sent:
-                    return
-                interrupt_sent = True
-                _interrupt_remote_prompt_best_effort(base_url, remote_prompt_id, token=token)
+                def interrupt_remote() -> None:
+                    nonlocal interrupt_sent
+                    if interrupt_sent:
+                        return
+                    interrupt_sent = True
+                    _interrupt_remote_prompt_best_effort(base_url, remote_prompt_id, token=token)
 
-            try:
-                payload = _post_remote_json(
+                try:
+                    payload = _post_remote_json(
+                        base_url,
+                        "/cutlery/remote/group/run",
+                        {
+                            "prompt_id": remote_prompt_id,
+                            "workflow": workflow,
+                            "values": values,
+                            "timeout_seconds": timeout,
+                        },
+                        token=token,
+                        timeout_seconds=timeout + 15.0,
+                        on_cancel=interrupt_remote,
+                    )
+                except BaseException:
+                    interrupt_remote()
+                    raise
+            else:
+                payload = await self._run_streamed(
                     base_url,
-                    "/cutlery/remote/group/run",
-                    {
-                        "prompt_id": remote_prompt_id,
-                        "workflow": workflow,
-                        "values": values,
-                        "timeout_seconds": timeout,
-                    },
+                    workflow,
+                    values,
+                    local_prompt_id=local_prompt_id or f"prompt:{uuid.uuid4()}",
+                    local_node_id=local_node_id,
+                    remote_prompt_id=remote_prompt_id,
+                    progress_mapping=progress_mapping,
                     token=token,
-                    timeout_seconds=timeout + 15.0,
-                    on_cancel=interrupt_remote,
+                    timeout=timeout,
                 )
-            except BaseException:
-                interrupt_remote()
-                raise
-        else:
-            payload = await self._run_streamed(
-                base_url,
-                workflow,
-                values,
-                local_prompt_id=local_prompt_id or f"prompt:{uuid.uuid4()}",
-                local_node_id=local_node_id,
-                remote_prompt_id=remote_prompt_id,
-                progress_mapping=progress_mapping,
-                token=token,
-                timeout=timeout,
-            )
+        except asyncio.CancelledError:
+            _log_remote_group_job_finished(base_url, remote_prompt_id, remote_job_started, outcome="cancelled")
+            raise
+        except BaseException:
+            _log_remote_group_job_finished(base_url, remote_prompt_id, remote_job_started, outcome="failed")
+            raise
         if not payload.get("ok"):
+            _log_remote_group_job_finished(base_url, remote_prompt_id, remote_job_started, outcome="failed")
             raise RuntimeError(
                 f"Remote group prompt {remote_prompt_id} failed: "
                 f"{payload.get('error') or 'Remote group execution failed.'}"
             )
+        _log_remote_group_job_finished(base_url, remote_prompt_id, remote_job_started, outcome="completed")
 
         outputs = payload.get("outputs") if isinstance(payload.get("outputs"), dict) else {}
         result = []

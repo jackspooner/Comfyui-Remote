@@ -832,32 +832,46 @@ class RemoteModelNodeTests(unittest.TestCase):
         module = _load_nodes_remote()
         captured = {}
 
-        class Cancelled(BaseException):
-            pass
-
         def fake_post_json(base_url, path, body, token=None, timeout_seconds=None, on_cancel=None):
             captured["prompt_id"] = body["prompt_id"]
             on_cancel()
-            raise Cancelled()
+            raise asyncio.CancelledError()
 
         module._post_remote_json = fake_post_json
         module._interrupt_remote_prompt_best_effort = mock.Mock()
 
         with mock.patch.dict(os.environ, {"CUTLERY_REMOTE_TOKEN": "abc123"}, clear=False):
-            with self.assertRaises(Cancelled):
-                module.CutleryRemoteGroupExecutor().run_remote_group(
-                    remote_base_url="127.0.0.1:8189",
-                    remote_workflow_json=json.dumps({"1": {"class_type": "NoOp", "inputs": {}}}),
-                    input_ports_json="[]",
-                    output_ports_json="[]",
-                    timeout_seconds=7,
-                )
+            with self.assertLogs(module.LOGGER, level="INFO") as logs:
+                with self.assertRaises(asyncio.CancelledError):
+                    module.CutleryRemoteGroupExecutor().run_remote_group(
+                        remote_base_url="127.0.0.1:8189",
+                        remote_workflow_json=json.dumps({"1": {"class_type": "NoOp", "inputs": {}}}),
+                        input_ports_json="[]",
+                        output_ports_json="[]",
+                        timeout_seconds=7,
+                    )
 
         module._interrupt_remote_prompt_best_effort.assert_called_once_with(
             "http://127.0.0.1:8189",
             captured["prompt_id"],
             token="abc123",
         )
+        self.assertIn("Remote group cancelled target=http://127.0.0.1:8189", "\n".join(logs.output))
+
+    def test_remote_group_executor_logs_failed_job_duration(self):
+        module = _load_nodes_remote()
+        module._post_remote_json = lambda *_args, **_kwargs: {"ok": False, "error": "peer failed"}
+
+        with self.assertLogs(module.LOGGER, level="WARNING") as logs:
+            with self.assertRaisesRegex(RuntimeError, "peer failed"):
+                module.CutleryRemoteGroupExecutor().run_remote_group(
+                    remote_base_url="127.0.0.1:8189",
+                    remote_workflow_json=json.dumps({"1": {"class_type": "NoOp", "inputs": {}}}),
+                    input_ports_json="[]",
+                    output_ports_json="[]",
+                )
+
+        self.assertIn("Remote group failed target=http://127.0.0.1:8189", "\n".join(logs.output))
 
     def test_remote_group_executor_logs_target_and_capabilities_smoke_before_dispatch(self):
         module = _load_nodes_remote()
@@ -904,6 +918,8 @@ class RemoteModelNodeTests(unittest.TestCase):
         self.assertIn("Remote group detected target=http://127.0.0.1:8189", log_output)
         self.assertIn("Remote smoke result target=http://127.0.0.1:8189", log_output)
         self.assertIn('"remote_groups":true', log_output)
+        self.assertIn("Remote group completed target=http://127.0.0.1:8189", log_output)
+        self.assertRegex(log_output, r"duration_seconds=\d+\.\d{2}")
 
     def test_remote_group_preflight_rejects_machine_specific_combo_value_missing_remotely(self):
         module = _load_nodes_remote()
