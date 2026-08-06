@@ -100,6 +100,13 @@ class TwoPeerConfig:
                 f"{GATE_ENV}=1 requires {required}. "
                 "This gate does not read peer .env files or infer credentials."
             )
+        if release_mode:
+            for name in RELEASE_FIXTURE_ENVS:
+                if name != CANCEL_PROMPT_ID_ENV:
+                    try:
+                        _json_body(os.environ[name], name)
+                    except AssertionError as exc:
+                        raise ValueError(str(exc)) from exc
         return cls(
             local_url=_origin(os.environ[LOCAL_URL_ENV], LOCAL_URL_ENV),
             remote_url=_origin(os.environ[REMOTE_URL_ENV], REMOTE_URL_ENV),
@@ -219,7 +226,7 @@ class TwoPeerIntegrationTests(_ConfiguredTwoPeerGate, unittest.TestCase):
     def _run_group_fixture(self, fixture_env: str, label: str, *, require_outputs: bool = False):
         body = _fixture_body(fixture_env, release_mode=self.config.release_mode)
         if body is None:
-            self.skipTest(f"Set {GROUP_RUN_BODY_ENV} to a reviewed compiled group request to execute this optional check.")
+            self.skipTest(f"Set {fixture_env} to a reviewed {label} request to execute this optional check.")
         status, payload = _request_json(
             "POST",
             f"{self.config.remote_url}/cutlery/remote/group/run",
@@ -404,6 +411,26 @@ class TwoPeerReleaseConfigurationTests(unittest.TestCase):
         with patch.dict(os.environ, environment, clear=True):
             config = TwoPeerConfig.from_environment()
         self.assertTrue(config.release_mode)
+
+    def test_release_gate_rejects_a_malformed_fixture_before_peer_setup(self):
+        environment = self._base_environment()
+        environment.update(
+            {
+                RELEASE_ENV: "1",
+                GROUP_RUN_BODY_ENV: "not-json",
+                BOUNDARY_GROUP_RUN_BODY_ENV: "{}",
+                PRELOAD_BODY_ENV: "{}",
+                CANCEL_PROMPT_ID_ENV: "pending-release-job",
+                STREAM_BODY_ENV: "{}",
+                CLIP_TEXT_ENCODE_BODY_ENV: "{}",
+                CLIP_DUAL_TEXT_ENCODE_BODY_ENV: "{}",
+                CLIP_QWEN_IMAGE_EDIT_BODY_ENV: "{}",
+                CLIP_LORA_TEXT_ENCODE_BODY_ENV: "{}",
+            }
+        )
+        with patch.dict(os.environ, environment, clear=True):
+            with self.assertRaisesRegex(ValueError, "must contain a JSON object"):
+                TwoPeerConfig.from_environment()
 
 
 if __name__ == "__main__":
