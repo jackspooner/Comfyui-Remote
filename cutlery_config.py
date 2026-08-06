@@ -63,6 +63,23 @@ def strict_bool(
     raise ValueError(f"{name} must be one of: {accepted}.")
 
 
+def strict_positive_int(
+    name: str,
+    default: int,
+    *,
+    env: Mapping[str, str] | None = None,
+    dotenv: Mapping[str, str] | None = None,
+) -> int:
+    raw_value = _value(name, str(default), os.environ if env is None else env, load_comfy_root_dotenv() if dotenv is None else dotenv)
+    try:
+        value = int(raw_value)
+    except ValueError as error:
+        raise ValueError(f"{name} must be a positive integer.") from error
+    if value <= 0:
+        raise ValueError(f"{name} must be a positive integer.")
+    return value
+
+
 def load_feature_config(
     *,
     env: Mapping[str, str] | None = None,
@@ -109,4 +126,5 @@ __all__ = [
     "get_feature_config",
     "load_feature_config",
     "strict_bool",
+    "strict_positive_int",
 ]
