@@ -19,6 +19,7 @@ _PLAIN_TARGET_RE = re.compile(r"^(?P<host>[A-Za-z0-9_.-]+):(?P<port>[1-9][0-9]{0
 _CURLY_TARGET_RE = re.compile(r"^(?P<host>[A-Za-z0-9_.-]+):\{(?P<port>[1-9][0-9]{0,4})\}$")
 _CUTLERY_TARGET_RE = re.compile(r"^cutlery://(?P<host>[A-Za-z0-9_.-]+):(?P<port>[1-9][0-9]{0,4})$")
 _CUTLERY_ALIAS_RE = re.compile(r"^cutlery://(?P<alias>[A-Za-z0-9_.-]+)$")
+_LEGACY_CUTLERY_ALIAS_RE = re.compile(r"^cutlery/(?P<alias>[A-Za-z0-9_.-]+)$")
 _GROUP_LABEL_SEPARATOR = " // "
 LEGACY_LOCAL_CONFIG_PATH = Path(__file__).resolve().parents[1] / "cutlery.local.json"
 LOCAL_CONFIG_PATH = data_path("config.json")
@@ -70,6 +71,14 @@ def remote_target_endpoint(value: object) -> str:
     text = str(value or "").strip()
     endpoint, separator, _label = text.partition(_GROUP_LABEL_SEPARATOR)
     return endpoint.strip() if separator else text
+
+
+def remote_target_alias(value: object) -> str | None:
+    """Return a target alias from its canonical or legacy spelling."""
+
+    text = remote_target_endpoint(value)
+    match = _CUTLERY_ALIAS_RE.fullmatch(text) or _LEGACY_CUTLERY_ALIAS_RE.fullmatch(text)
+    return match.group("alias") if match else None
 
 
 def parse_remote_target(title: object) -> RemoteTarget | None:
@@ -260,8 +269,7 @@ def resolve_trusted_remote_target(
         raise ValueError("Cutlery remote target is required.")
     targets = configured_remote_targets(config_path)
 
-    alias_match = _CUTLERY_ALIAS_RE.fullmatch(text)
-    alias = alias_match.group("alias") if alias_match else text
+    alias = remote_target_alias(text) or text
     if alias in targets:
         return targets[alias]
 
