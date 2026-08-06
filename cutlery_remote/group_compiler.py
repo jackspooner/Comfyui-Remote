@@ -9,6 +9,7 @@ from typing import Any
 
 from .boundary_types import SUPPORTED_BOUNDARY_PORT_TYPES, normalize_boundary_port_type
 from .model_inputs import iter_loader_model_inputs
+from .target import remote_target_endpoint
 
 
 MAX_PORTS = 64
@@ -60,7 +61,7 @@ class _EditorProjection:
 
 
 def _remote_target(title: Any) -> str | None:
-    text = str(title or "").strip()
+    text = remote_target_endpoint(title)
     alias_match = CUTLERY_ALIAS_RE.fullmatch(text)
     if alias_match:
         return f"cutlery://{alias_match.group(1)}"

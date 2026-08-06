@@ -13,6 +13,7 @@ from cutlery_remote.target import (
     RemoteTarget,
     configured_remote_targets,
     parse_remote_target,
+    remote_target_endpoint,
     resolve_trusted_remote_target,
 )
 
@@ -49,6 +50,51 @@ class RemoteTargetTests(unittest.TestCase):
         self.assertEqual(target.port, 8190)
         self.assertEqual(target.canonical, "cutlery://studio-gpu:8190")
         self.assertEqual(target.base_url, "http://studio-gpu:8190")
+
+    def test_labelled_group_title_uses_only_the_endpoint(self):
+        target = parse_remote_target("127.0.0.1:8889 // Name of group")
+
+        self.assertEqual(remote_target_endpoint("127.0.0.1:8889 // Name of group"), "127.0.0.1:8889")
+        self.assertEqual(target.base_url, "http://127.0.0.1:8889")
+        self.assertEqual(target.display_label, "127.0.0.1:8889")
+
+    def test_labelled_alias_uses_only_the_alias_for_trust_resolution(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "remote_targets": {
+                            "renderhost": {"base_url": "http://127.0.0.1:8189"},
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            target = resolve_trusted_remote_target("cutlery://renderhost // Production renderer", config_path=config_path)
+            by_origin = resolve_trusted_remote_target("127.0.0.1:8189 // Render peer", config_path=config_path)
+
+        self.assertEqual(target.name, "renderhost")
+        self.assertEqual(target.base_url, "http://127.0.0.1:8189")
+        self.assertEqual(by_origin, target)
+
+    def test_group_label_cannot_make_an_untrusted_endpoint_trusted(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "remote_targets": {
+                            "renderhost": {"base_url": "http://127.0.0.1:8189"},
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "not trusted"):
+                resolve_trusted_remote_target("192.0.2.50:8889 // renderhost", config_path=config_path)
 
     def test_reject_non_remote_group_titles(self):
         for title in ["Group", "192.0.2.247", "cutlery://", "http://192.0.2.247:8188"]:
