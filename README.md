@@ -21,4 +21,4 @@ Inbound roles are disabled by default. Outbound requests are restricted to expli
 
 ## Testing and release
 
-Run `python -m unittest discover -s tests -v`. The release gate also builds a wheel, checks its exact allowlist, runs the portable suite from a clean clone, verifies two-peer behavior, and requires an independent security review before publishing `0.1.0`.
+Run `python -m unittest discover -s tests -v`. The release gate also builds a wheel, checks its exact allowlist, runs the portable suite from a clean clone, runs the opt-in [two-peer integration gate](docs/remote-execution.md#two-peer-release-gate) against configured peers, and requires an independent security review before publishing `0.1.0`.
