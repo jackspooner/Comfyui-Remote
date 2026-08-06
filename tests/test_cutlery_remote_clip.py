@@ -263,6 +263,7 @@ class CutleryRemoteClipTests(unittest.TestCase):
         inputs = module.CutleryRemoteClipTextEncode.INPUT_TYPES()
 
         self.assertEqual(inputs["required"]["text_encoder"][0], ["local-q4.gguf", "local-t5.safetensors"])
+        self.assertTrue(inputs["required"]["text_encoder"][1]["defaultInput"])
         self.assertEqual(inputs["required"]["clip_type"][0], list(module.CLIP_TYPES))
         self.assertNotIn("lora_1", inputs["required"])
         self.assertNotIn("strength_clip_1", inputs["required"])
