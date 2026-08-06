@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import sys
 import unittest
 from pathlib import Path
@@ -23,6 +24,22 @@ class _Response:
         return self.chunks.pop(0) if self.chunks else b""
 
 
+class _AsyncContent:
+    def __init__(self, chunks: list[bytes]) -> None:
+        self.chunks = list(chunks)
+        self.read_sizes: list[int] = []
+
+    async def read(self, size: int) -> bytes:
+        self.read_sizes.append(size)
+        return self.chunks.pop(0) if self.chunks else b""
+
+
+class _AsyncResponse:
+    def __init__(self, chunks: list[bytes], *, content_length: int | None = None) -> None:
+        self.content_length = content_length
+        self.content = _AsyncContent(chunks)
+
+
 class CutleryInterruptTests(unittest.TestCase):
     def test_response_limit_rejects_declared_content_length_before_reading(self):
         response = _Response([b"never read"], content_length="5")
@@ -44,6 +61,22 @@ class CutleryInterruptTests(unittest.TestCase):
         response = _Response([b"ab", b"cd", b""])
 
         self.assertEqual(cutlery_interrupt.read_response_bytes(response, max_response_bytes=4), b"abcd")
+
+    def test_async_response_limit_rejects_declared_content_length_before_reading(self):
+        response = _AsyncResponse([b"never read"], content_length=5)
+
+        with self.assertRaisesRegex(RuntimeError, r"declares 5 bytes.*4-byte limit"):
+            asyncio.run(cutlery_interrupt.read_response_bytes_async(response, max_response_bytes=4))
+
+        self.assertEqual(response.content.read_sizes, [])
+
+    def test_async_response_limit_rejects_chunked_body_while_streaming(self):
+        response = _AsyncResponse([b"abc", b"def", b""])
+
+        with self.assertRaisesRegex(RuntimeError, r"exceeds the 4-byte limit"):
+            asyncio.run(cutlery_interrupt.read_response_bytes_async(response, max_response_bytes=4))
+
+        self.assertEqual(response.content.read_sizes, [cutlery_interrupt.HTTP_RESPONSE_READ_CHUNK_SIZE] * 2)
 
 
 if __name__ == "__main__":

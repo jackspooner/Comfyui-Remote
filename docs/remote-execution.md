@@ -161,7 +161,7 @@ Cutlery tensor-tree blob on the peer and restored to its native ComfyUI type on
 the client. Both peers must provide the current WF3 blob adapter nodes and the
 `cutlery_tensor_tree_v2` capability.
 
-A compiled boundary accepts at most 64 uniquely named ports in each direction. File-backed audio or video returned by a peer is limited to 128 MiB per item and 256 MiB across one response. The regenerable content-addressed blob cache lives under `CUTLERY_DATA_DIR/remote_blobs`.
+A compiled boundary accepts at most 64 uniquely named ports in each direction. File-backed audio or video returned by a peer is limited to 128 MiB per item and 256 MiB across one response. Before decoding generic Remote JSON, the sender rejects a declared `Content-Length` or streamed/chunked body larger than `CUTLERY_REMOTE_RESPONSE_LIMIT_MB` (384 MiB by default); this accommodates the aggregate media boundary after base64 transport. The regenerable content-addressed blob cache lives under `CUTLERY_DATA_DIR/remote_blobs`.
 
 Cancellation is prompt-specific. If the client workflow is interrupted or times out, it calls the peer's interrupt route with the remote prompt ID; an already-finished prompt is a safe no-op.
 
@@ -264,15 +264,38 @@ $env:CUTLERY_REMOTE_TWO_PEER_TOKEN = "<shared peer token>"
 python -m unittest tests.test_two_peer_integration -v
 ```
 
-The required checks read each peer's feature descriptor, confirm the receiver's authenticated capability preflight, prove that missing and invalid bearer tokens both fail with `401`, verify protocol-skew rejection in the client validator, and ask the sender to reject a deliberately untrusted loopback origin before it can proxy or attach a token. The suite neither logs the token nor writes a peer's configuration, files, models, or workflow history.
+The always-on checks read each peer's feature descriptor, confirm the receiver's authenticated capability preflight, prove that missing and invalid bearer tokens both fail with `401`, verify protocol-skew rejection in the client validator, and ask the sender to reject a deliberately untrusted loopback origin before it can proxy or attach a token. They neither log the token nor write a peer's configuration, files, models, or workflow history; the reviewed execution fixtures below intentionally create transient jobs on their dedicated peer.
 
-Optional fixtures cover the operations that inherently change transient execution state. Supply only reviewed payloads against dedicated test data:
+The portable suite keeps state-changing checks optional. A release candidate must
+set `CUTLERY_REMOTE_TWO_PEER_RELEASE=1`; that mode refuses to make a network
+request until every fixture below is present. Supply only reviewed payloads
+against dedicated test data and a dedicated pending cancellation job. The
+preload fixture runs twice, once for the cold path and again for the warm path.
+
+```powershell
+$env:CUTLERY_REMOTE_TWO_PEER_RELEASE = "1"
+```
 
 | Variable | Check |
 | --- | --- |
-| `CUTLERY_REMOTE_TWO_PEER_GROUP_RUN_BODY` | Runs one compiled group request on the receiving peer. |
+| `CUTLERY_REMOTE_TWO_PEER_GROUP_RUN_BODY` | Runs one compiled generic group request on the receiving peer. |
+| `CUTLERY_REMOTE_TWO_PEER_BOUNDARY_GROUP_RUN_BODY` | Runs a compiled group with reviewed supported tensor-tree/WF3 boundary inputs and outputs, including the required output-bundle assertion. |
 | `CUTLERY_REMOTE_TWO_PEER_STREAM_BODY` | Opens the authenticated progress WebSocket, submits one reviewed progress-emitting group request, and requires streamed progress plus a successful terminal result. |
-| `CUTLERY_REMOTE_TWO_PEER_PRELOAD_BODY` | Calls the peer preload route. Run the same reviewed fixture cold and warm to verify materialization/preload reuse. |
-| `CUTLERY_REMOTE_TWO_PEER_CANCEL_PROMPT_ID` | Cancels one dedicated pending remote-group prompt and verifies prompt-specific cancellation. |
+| `CUTLERY_REMOTE_TWO_PEER_PRELOAD_BODY` | Calls the peer preload route twice with the same reviewed request to prove cold and warm materialization/preload behavior. |
+| `CUTLERY_REMOTE_TWO_PEER_CANCEL_PROMPT_ID` | Cancels one dedicated pending remote-group prompt and verifies prompt-specific cancellation. Never point this at a user or production job. |
+| `CUTLERY_REMOTE_TWO_PEER_CLIP_TEXT_ENCODE_BODY` | Runs the single-encoder Remote CLIP text-encode route and requires a conditioning bundle. |
+| `CUTLERY_REMOTE_TWO_PEER_CLIP_DUAL_TEXT_ENCODE_BODY` | Runs the dual-encoder Remote CLIP route and requires a conditioning bundle. |
+| `CUTLERY_REMOTE_TWO_PEER_CLIP_QWEN_IMAGE_EDIT_BODY` | Runs the reviewed Qwen image-edit Remote CLIP route and requires a conditioning bundle. |
+| `CUTLERY_REMOTE_TWO_PEER_CLIP_LORA_TEXT_ENCODE_BODY` | Runs text encoding with a reviewed, already-materialized LoRA chain and requires a conditioning bundle. The release operator must use a dedicated materialized LoRA and inspect cleanup separately. |
 
-These optional variables are intentionally absent from `.env.example`: they are release-fixture inputs, not application configuration. Do not point them at a production job, model, or arbitrary target.
+Every `*_BODY` value is a JSON object, not a path. Keep release fixture files
+and their preparation steps outside this repository so they cannot accidentally
+ship in the public archive. The gate does not read a peer's `.env`, infer a
+token, or create fixture data.
+
+`CUTLERY_REMOTE_TWO_PEER_RELEASE=1` covers execution interoperability, not the
+destructive materialization and cleanup lifecycle. Before an immutable release,
+the release operator must separately approve and record the result of the
+materialization, size-limit, hash-mismatch, and cleanup checks on a disposable
+peer. Those operations intentionally remain outside this automated gate because
+they write model files or clear shared transient staging.

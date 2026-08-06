@@ -92,6 +92,43 @@ def read_response_bytes(response: Any, *, max_response_bytes: int | None = None)
         chunks.append(payload)
 
 
+async def read_response_bytes_async(response: Any, *, max_response_bytes: int | None = None) -> bytes:
+    """Read an async HTTP response in bounded chunks before it reaches a JSON decoder."""
+
+    if max_response_bytes is not None:
+        if not isinstance(max_response_bytes, int) or isinstance(max_response_bytes, bool) or max_response_bytes < 0:
+            raise ValueError("max_response_bytes must be a non-negative integer or None.")
+        content_length = getattr(response, "content_length", None)
+        if content_length is not None:
+            try:
+                declared_bytes = int(content_length)
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError("HTTP response has an invalid Content-Length header.") from exc
+            if declared_bytes < 0:
+                raise RuntimeError("HTTP response has an invalid Content-Length header.")
+            if declared_bytes > max_response_bytes:
+                raise RuntimeError(
+                    f"HTTP response declares {declared_bytes} bytes, exceeding the {max_response_bytes}-byte limit."
+                )
+
+    content = getattr(response, "content", None)
+    read = getattr(content, "read", None)
+    if not callable(read):
+        raise RuntimeError("HTTP response body is not readable.")
+
+    chunks: list[bytes] = []
+    total_bytes = 0
+    while True:
+        chunk = await read(HTTP_RESPONSE_READ_CHUNK_SIZE)
+        if not chunk:
+            return b"".join(chunks)
+        payload = bytes(chunk)
+        total_bytes += len(payload)
+        if max_response_bytes is not None and total_bytes > max_response_bytes:
+            raise RuntimeError(f"HTTP response exceeds the {max_response_bytes}-byte limit.")
+        chunks.append(payload)
+
+
 def throw_if_interrupted() -> None:
     try:
         import comfy.model_management as model_management  # type: ignore
