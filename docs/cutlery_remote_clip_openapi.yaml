@@ -1,0 +1,877 @@
+openapi: 3.1.0
+info:
+  title: Cutlery Remote CLIP API
+  version: 2.0.0
+  description: Authenticated, default-disabled inbound Remote CLIP execution and materialization routes, plus always-available outbound discovery and clear-proxy branches.
+servers:
+  - url: http://127.0.0.1:8188
+tags:
+  - name: Remote CLIP discovery
+    description: Lightweight outbound choices and authenticated local inventory.
+  - name: Remote CLIP execution
+    description: Authenticated text and image-edit conditioning execution on this host.
+  - name: Remote CLIP materialization
+    description: Authenticated streamed staging of CLIP, LoRA, and input-image files.
+  - name: Remote CLIP cleanup
+    description: Authenticated local cleanup or unauthenticated outbound proxy cleanup.
+security:
+  - bearerAuth: []
+paths:
+  /cutlery/remote/clip/inventory:
+    get:
+      tags: [Remote CLIP discovery]
+      summary: List remote text encoders, VAEs, and LoRAs
+      operationId: getCutleryRemoteClipInventory
+      description: Available only when `CUTLERY_REMOTE_CLIP_SERVER_ENABLED=1`; the disabled check runs before authentication, hashing, or model inventory work.
+      parameters:
+        - name: include_hashes
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: ["0", "1", "false", "true"]
+            default: "1"
+          description: Set to `0` or `false` for lightweight dropdown inventory without hashing CLIP/LoRA files.
+      responses:
+        "200":
+          description: Available remote text encoders, VAEs, LoRAs, and CLIP loader types.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RemoteClipInventory"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/RemoteClipServerDisabled"
+        "503":
+          $ref: "#/components/responses/TokenNotConfigured"
+  /cutlery/remote/clip/choices:
+    get:
+      tags: [Remote CLIP discovery]
+      summary: Return lightweight dropdown choices for remote text-encode nodes
+      operationId: getCutleryRemoteClipChoices
+      security: []
+      responses:
+        "200":
+          description: Dropdown-safe text encoder, VAE, and CLIP type choices. This route avoids hash scanning.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RemoteClipChoices"
+        "502":
+          description: The configured outbound Remote CLIP target could not provide choices.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /cutlery/remote/clip/text-encode:
+    post:
+      tags: [Remote CLIP execution]
+      summary: Encode prompt text on the remote ComfyUI instance
+      operationId: postCutleryRemoteClipTextEncode
+      description: Available only when `CUTLERY_REMOTE_CLIP_SERVER_ENABLED=1`; the disabled check runs before authentication, JSON parsing, model loading, or encoding.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RemoteClipTextEncodeRequest"
+      responses:
+        "200":
+          description: Encoded native ComfyUI CONDITIONING as a bundled manifest plus base64 tensor blobs.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RemoteClipTextEncodeResponse"
+        "400":
+          description: Invalid request body.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/RemoteClipServerDisabled"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/TokenNotConfigured"
+  /cutlery/remote/clip/dual-text-encode:
+    post:
+      tags: [Remote CLIP execution]
+      summary: Encode prompt text with two remote CLIP/text encoder files
+      operationId: postCutleryRemoteDualClipTextEncode
+      description: Available only when `CUTLERY_REMOTE_CLIP_SERVER_ENABLED=1`; the disabled check runs before authentication, JSON parsing, model loading, or encoding.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RemoteDualClipTextEncodeRequest"
+      responses:
+        "200":
+          description: Encoded native ComfyUI CONDITIONING as a bundled manifest plus base64 tensor blobs.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RemoteClipTextEncodeResponse"
+        "400":
+          description: Invalid request body.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/RemoteClipServerDisabled"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/TokenNotConfigured"
+  /cutlery/remote/clip/qwen-image-edit-plus:
+    post:
+      tags: [Remote CLIP execution]
+      summary: Encode Qwen image-edit prompt and images on the remote ComfyUI instance
+      operationId: postCutleryRemoteQwenImageEditPlus
+      description: Available only when `CUTLERY_REMOTE_CLIP_SERVER_ENABLED=1`. The request body is limited to 2 GiB by default and the disabled check runs before authentication, JSON parsing, materialization reads, model loading, or encoding.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RemoteQwenImageEditPlusRequest"
+      responses:
+        "200":
+          description: Encoded native ComfyUI CONDITIONING as a bundled manifest plus base64 tensor blobs.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RemoteClipTextEncodeResponse"
+        "400":
+          description: Invalid request body.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/RemoteClipServerDisabled"
+        "413":
+          description: Qwen encode JSON body is larger than the remote request body limit.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/TokenNotConfigured"
+  /cutlery/remote/clip/unload:
+    post:
+      tags: [Remote CLIP cleanup]
+      summary: Unload the active remote CLIP text encoder cache
+      operationId: postCutleryRemoteClipUnload
+      description: Available only when `CUTLERY_REMOTE_CLIP_SERVER_ENABLED=1`. Clears the local Remote CLIP and LoRA caches, runs ComfyUI/CUDA memory cleanup synchronously, and returns only after cleanup completes.
+      responses:
+        "200":
+          description: Remote CLIP cache cleanup completed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RemoteClipUnloadResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/RemoteClipServerDisabled"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/TokenNotConfigured"
+  /cutlery/remote/clip/clips/materialize:
+    post:
+      tags: [Remote CLIP materialization]
+      summary: Materialize a local CLIP/text encoder on the remote ComfyUI instance
+      operationId: postCutleryRemoteClipFileMaterialize
+      description: Available only when `CUTLERY_REMOTE_CLIP_SERVER_ENABLED=1`. Streams a selected local CLIP/text encoder to the remote `models/text_encoders/cutlery_remote/` folder, enforcing a 2 GiB default against declared and streamed bytes.
+      parameters:
+        - name: X-Cutlery-Clip-Name
+          in: header
+          required: false
+          schema:
+            type: string
+          description: URL-encoded local relative CLIP/text encoder path used to derive a safe materialized filename.
+        - name: X-Cutlery-Clip-SHA256
+          in: header
+          required: false
+          schema:
+            type: string
+          description: Expected SHA-256 for the uploaded bytes.
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        "200":
+          description: Remote relative CLIP/text encoder path for the materialized file.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RemoteClipFileMaterializeResponse"
+        "400":
+          description: Invalid upload or hash mismatch.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/RemoteClipServerDisabled"
+        "413":
+          description: Uploaded CLIP/text encoder is larger than the remote materialization limit.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/TokenNotConfigured"
+  /cutlery/remote/clip/loras/materialize:
+    post:
+      tags: [Remote CLIP materialization]
+      summary: Materialize a local LoRA on the remote ComfyUI instance
+      operationId: postCutleryRemoteClipLoraMaterialize
+      description: Available only when `CUTLERY_REMOTE_CLIP_SERVER_ENABLED=1`. Streams a selected local LoRA to the same relative path and filename under the remote instance's main `models/loras/` directory, enforcing a 4096 MiB (4 GiB) default against declared and streamed bytes. A same-hash destination is reused; an existing destination with different bytes is rejected.
+      parameters:
+        - name: X-Cutlery-Lora-Name
+          in: header
+          required: false
+          schema:
+            type: string
+          description: URL-encoded path relative to the local main `models/loras/` directory. The receiver preserves this exact relative path below its own main `models/loras/` directory.
+        - name: X-Cutlery-Lora-SHA256
+          in: header
+          required: false
+          schema:
+            type: string
+          description: Expected SHA-256 for the uploaded bytes.
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        "200":
+          description: Path-preserved LoRA relative to the remote main `models/loras/` directory.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RemoteClipLoraMaterializeResponse"
+        "400":
+          description: Invalid relative path, upload hash mismatch, or an existing same-path file with different contents.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/RemoteClipServerDisabled"
+        "413":
+          description: Uploaded LoRA is larger than the remote materialization limit.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/TokenNotConfigured"
+  /cutlery/remote/clip/images/materialize:
+    post:
+      tags: [Remote CLIP materialization]
+      summary: Materialize a Qwen input image on the remote ComfyUI instance
+      operationId: postCutleryRemoteClipQwenImageMaterialize
+      description: Available only when `CUTLERY_REMOTE_CLIP_SERVER_ENABLED=1`. Streams one PNG frame to the remote `input/cutlery_remote/qwen/` folder, enforcing a 2 GiB default against declared and streamed bytes, and returns a compact file reference.
+      parameters:
+        - name: X-Cutlery-Image-Name
+          in: header
+          required: false
+          schema:
+            type: string
+          description: URL-encoded source image filename used to derive a safe materialized filename.
+        - name: X-Cutlery-Image-SHA256
+          in: header
+          required: false
+          schema:
+            type: string
+          description: Expected SHA-256 for the uploaded PNG bytes.
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        "200":
+          description: Remote input-folder reference for the materialized PNG.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RemoteQwenImageMaterializeResponse"
+        "400":
+          description: Invalid upload or hash mismatch.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/RemoteClipServerDisabled"
+        "413":
+          description: Uploaded image is larger than the remote materialization limit.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/TokenNotConfigured"
+  /cutlery/remote/clip/clips/clear:
+    post:
+      tags: [Remote CLIP cleanup]
+      summary: Clear materialized remote CLIP/text encoder files
+      operationId: postCutleryRemoteClipFileClear
+      description: Deletes only CLIP/text encoder files that Cutlery materialized under the remote `models/text_encoders/cutlery_remote/` folder. Local browser calls may use this as a proxy to the configured remote instance; authenticated remote calls clear the current instance.
+      security:
+        - bearerAuth: []
+        - {}
+      responses:
+        "200":
+          description: Materialized remote CLIP/text encoder files were cleared.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RemoteClipFileClearResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: An authenticated local-clear request was rejected because the inbound Remote CLIP server role is disabled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FeatureDisabledResponse"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/TokenNotConfigured"
+  /cutlery/remote/clip/loras/clear:
+    post:
+      tags: [Remote CLIP cleanup]
+      summary: Clear legacy materialized remote LoRAs
+      operationId: postCutleryRemoteClipLoraClear
+      description: Deletes only legacy LoRAs under the remote main `models/loras/cutlery_remote/` cache folder. It does not delete path-preserved LoRAs. Local browser calls may use this as a proxy to the configured remote instance; authenticated remote calls clear the current instance.
+      security:
+        - bearerAuth: []
+        - {}
+      responses:
+        "200":
+          description: Materialized remote LoRAs were cleared.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RemoteClipLoraClearResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: An authenticated local-clear request was rejected because the inbound Remote CLIP server role is disabled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FeatureDisabledResponse"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/TokenNotConfigured"
+  /cutlery/remote/clip/images/clear:
+    post:
+      tags: [Remote CLIP cleanup]
+      summary: Clear materialized remote Qwen input images
+      operationId: postCutleryRemoteClipQwenImageClear
+      description: Deletes only Qwen input images that Cutlery materialized under the remote `input/cutlery_remote/qwen/` folder. Local browser calls may use this as a proxy to the configured remote instance; authenticated remote calls clear the current instance.
+      security:
+        - bearerAuth: []
+        - {}
+      responses:
+        "200":
+          description: Materialized remote Qwen input images were cleared.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RemoteQwenImageClearResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: An authenticated local-clear request was rejected because the inbound Remote CLIP server role is disabled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FeatureDisabledResponse"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/TokenNotConfigured"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: Shared token from CUTLERY_REMOTE_TOKEN.
+  responses:
+    Unauthorized:
+      description: Missing or incorrect bearer token.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    TokenNotConfigured:
+      description: CUTLERY_REMOTE_TOKEN is not configured on the remote ComfyUI instance.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    RemoteClipServerDisabled:
+      description: Inbound Remote CLIP routes are disabled. Set `CUTLERY_REMOTE_CLIP_SERVER_ENABLED=1` and restart ComfyUI.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/FeatureDisabledResponse"
+    InternalError:
+      description: Remote CLIP execution, materialization, or cleanup failed.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+  schemas:
+    FeatureDisabledResponse:
+      type: object
+      required: [ok, code, error]
+      properties:
+        ok:
+          type: boolean
+          const: false
+        code:
+          type: string
+          const: remote_clip_server_disabled
+        error:
+          type: string
+    ErrorResponse:
+      type: object
+      required: [ok, error]
+      properties:
+        ok:
+          type: boolean
+          const: false
+        error:
+          type: string
+    RemoteClipInventory:
+      type: object
+      required: [ok, text_encoders, clip_inventory, loras, lora_inventory, clip_types, vaes]
+      properties:
+        ok:
+          type: boolean
+          const: true
+        text_encoders:
+          type: array
+          description: Remote text encoder filenames from ComfyUI text_encoders plus ComfyUI-GGUF clip_gguf entries.
+          items:
+            type: string
+        clip_inventory:
+          type: array
+          description: CLIP/text encoder inventory. With `include_hashes=0`, entries omit hashes for lightweight exact-name resolution; with hashes enabled, SHA-256 values are included for diagnostics and compatibility.
+          items:
+            $ref: "#/components/schemas/RemoteClipFileInventoryEntry"
+        loras:
+          type: array
+          description: Backwards-compatible list of remote LoRA relative paths.
+          items:
+            type: string
+        lora_inventory:
+          type: array
+          description: LoRA inventory. With `include_hashes=0`, entries omit hashes for lightweight exact-name resolution; with hashes enabled, SHA-256 values are included for diagnostics and compatibility.
+          items:
+            $ref: "#/components/schemas/RemoteClipLoraInventoryEntry"
+        clip_types:
+          type: array
+          items:
+            type: string
+        vaes:
+          type: array
+          description: Remote VAE names as listed by ComfyUI's VAE loader.
+          items:
+            type: string
+    RemoteClipChoices:
+      type: object
+      required: [ok, text_encoders, clip_types, vaes]
+      properties:
+        ok:
+          type: boolean
+          const: true
+        text_encoders:
+          type: array
+          items:
+            type: string
+        clip_types:
+          type: array
+          items:
+            type: string
+        vaes:
+          type: array
+          items:
+            type: string
+    RemoteClipFileInventoryEntry:
+      type: object
+      required: [name, sha256, materialized]
+      properties:
+        name:
+          type: string
+          description: CLIP/text encoder path relative to the ComfyUI text_encoders folder.
+        sha256:
+          type: string
+          description: SHA-256 of the CLIP/text encoder file.
+        size:
+          type: integer
+          nullable: true
+        materialized:
+          type: boolean
+          description: True when the file lives under Cutlery's materialized remote CLIP folder.
+    RemoteClipLoraInventoryEntry:
+      type: object
+      required: [name, sha256, materialized]
+      properties:
+        name:
+          type: string
+          description: LoRA path relative to the ComfyUI loras folder.
+        sha256:
+          type: string
+          description: SHA-256 of the LoRA file.
+        size:
+          type: integer
+          nullable: true
+        materialized:
+          type: boolean
+          description: True only for a legacy file under Cutlery's `cutlery_remote` LoRA cache folder. Path-preserved synced LoRAs are normal inventory entries.
+    RemoteClipLora:
+      type: object
+      required: [lora_name, strength_clip]
+      properties:
+        lora_name:
+          type: string
+          description: LoRA path relative to the remote ComfyUI loras folder. The local node resolves display names to remote paths before encoding.
+        strength_clip:
+          type: number
+          default: 1.0
+    RemoteClipTextEncodeRequest:
+      type: object
+      required: [prompt, text_encoder]
+      properties:
+        prompt:
+          type: string
+        text_encoder:
+          type: string
+          description: Text encoder filename selected from the remote inventory. GGUF filenames are loaded through ComfyUI-GGUF.
+        clip_type:
+          type: string
+          default: stable_diffusion
+        device:
+          type: string
+          enum: [default, cpu]
+          default: default
+        loras:
+          type: array
+          items:
+            $ref: "#/components/schemas/RemoteClipLora"
+          default: []
+    RemoteDualClipTextEncodeRequest:
+      type: object
+      required: [prompt, clip_name1, clip_name2]
+      properties:
+        prompt:
+          type: string
+        clip_name1:
+          type: string
+          description: First CLIP/text encoder filename selected from the remote inventory. GGUF filenames are loaded through ComfyUI-GGUF.
+        clip_name2:
+          type: string
+          description: Second CLIP/text encoder or projection filename selected from the remote inventory.
+        clip_type:
+          type: string
+          default: ltxv
+        device:
+          type: string
+          enum: [default, cpu]
+          default: default
+        loras:
+          type: array
+          items:
+            $ref: "#/components/schemas/RemoteClipLora"
+          default: []
+    RemoteQwenImageEditPlusRequest:
+      type: object
+      required: [prompt, text_encoder]
+      properties:
+        prompt:
+          type: string
+        text_encoder:
+          type: string
+          description: Qwen image text encoder filename selected from the remote inventory. GGUF filenames are loaded through ComfyUI-GGUF.
+        clip_type:
+          type: string
+          default: qwen_image
+        device:
+          type: string
+          enum: [default, cpu]
+          default: default
+        vae_name:
+          type: string
+          description: Optional VAE filename selected from the remote inventory. `None` or an empty string skips reference-latent encoding.
+        images:
+          type: object
+          description: Up to three ComfyUI IMAGE inputs materialized as remote input-folder PNG references. Legacy inline PNG bundles are still accepted for compatibility.
+          properties:
+            image1:
+              oneOf:
+                - $ref: "#/components/schemas/RemoteImageFileRefBundle"
+                - $ref: "#/components/schemas/RemoteImageFileBundle"
+            image2:
+              oneOf:
+                - $ref: "#/components/schemas/RemoteImageFileRefBundle"
+                - $ref: "#/components/schemas/RemoteImageFileBundle"
+            image3:
+              oneOf:
+                - $ref: "#/components/schemas/RemoteImageFileRefBundle"
+                - $ref: "#/components/schemas/RemoteImageFileBundle"
+          additionalProperties: false
+    RemoteImageFileRefBundle:
+      type: object
+      required: [schema, format, mime_type, width, height, channels, frames]
+      properties:
+        schema:
+          type: string
+          const: cutlery.remote.image_file_ref_bundle.v1
+        format:
+          type: string
+          const: png
+        mime_type:
+          type: string
+          const: image/png
+        width:
+          type: integer
+        height:
+          type: integer
+        channels:
+          type: integer
+          const: 3
+        frames:
+          type: array
+          description: One materialized remote input PNG per batch item from the ComfyUI IMAGE tensor.
+          items:
+            type: object
+            required: [filename, name, subfolder, type, byte_count, sha256]
+            properties:
+              filename:
+                type: string
+                description: Original frame filename.
+              name:
+                type: string
+                description: Path relative to the remote ComfyUI input folder.
+              subfolder:
+                type: string
+                const: cutlery_remote/qwen
+              type:
+                type: string
+                const: input
+              mime_type:
+                type: string
+                const: image/png
+              byte_count:
+                type: integer
+              sha256:
+                type: string
+    RemoteImageFileBundle:
+      type: object
+      required: [schema, format, mime_type, width, height, channels, frames]
+      properties:
+        schema:
+          type: string
+          const: cutlery.remote.image_file_bundle.v1
+        format:
+          type: string
+          const: png
+        mime_type:
+          type: string
+          const: image/png
+        width:
+          type: integer
+        height:
+          type: integer
+        channels:
+          type: integer
+          const: 3
+        frames:
+          type: array
+          description: One PNG file per batch item from the ComfyUI IMAGE tensor.
+          items:
+            type: object
+            required: [filename, mime_type, byte_count, sha256, data]
+            properties:
+              filename:
+                type: string
+                description: Suggested PNG filename for this frame.
+              mime_type:
+                type: string
+                const: image/png
+              byte_count:
+                type: integer
+              sha256:
+                type: string
+              data:
+                type: string
+                contentEncoding: base64
+    RemoteValueBundle:
+      type: object
+      required: [schema, manifest, blobs]
+      properties:
+        schema:
+          type: string
+          const: cutlery.remote.value_bundle.v1
+        manifest:
+          type: object
+          additionalProperties: true
+        blobs:
+          type: object
+          additionalProperties:
+            type: string
+            contentEncoding: base64
+    RemoteClipTextEncodeResponse:
+      type: object
+      required: [ok, conditioning]
+      properties:
+        ok:
+          type: boolean
+          const: true
+        conditioning:
+          $ref: "#/components/schemas/RemoteValueBundle"
+    RemoteClipLoraMaterializeResponse:
+      type: object
+      required: [ok, name, sha256, size, materialized]
+      properties:
+        ok:
+          type: boolean
+          const: true
+        name:
+          type: string
+          description: Path-preserved LoRA name relative to the remote main `models/loras/` directory.
+        sha256:
+          type: string
+        size:
+          type: integer
+        materialized:
+          type: boolean
+          const: true
+    RemoteClipFileMaterializeResponse:
+      type: object
+      required: [ok, name, sha256, size, materialized]
+      properties:
+        ok:
+          type: boolean
+          const: true
+        name:
+          type: string
+          description: Materialized CLIP/text encoder path relative to the remote text_encoders folder.
+        sha256:
+          type: string
+        size:
+          type: integer
+        materialized:
+          type: boolean
+          const: true
+    RemoteQwenImageMaterializeResponse:
+      type: object
+      required: [ok, name, subfolder, type, sha256, size, materialized]
+      properties:
+        ok:
+          type: boolean
+          const: true
+        name:
+          type: string
+          description: Materialized PNG path relative to the remote ComfyUI input folder.
+        subfolder:
+          type: string
+          const: cutlery_remote/qwen
+        type:
+          type: string
+          const: input
+        sha256:
+          type: string
+        size:
+          type: integer
+        materialized:
+          type: boolean
+          const: true
+    RemoteClipLoraClearResponse:
+      type: object
+      required: [ok, deleted_count]
+      properties:
+        ok:
+          type: boolean
+          const: true
+        deleted_count:
+          type: integer
+    RemoteClipFileClearResponse:
+      type: object
+      required: [ok, deleted_count]
+      properties:
+        ok:
+          type: boolean
+          const: true
+        deleted_count:
+          type: integer
+    RemoteQwenImageClearResponse:
+      type: object
+      required: [ok, deleted_count]
+      properties:
+        ok:
+          type: boolean
+          const: true
+        deleted_count:
+          type: integer
+    RemoteClipUnloadResponse:
+      type: object
+      required: [ok, unloaded]
+      properties:
+        ok:
+          type: boolean
+          const: true
+        unloaded:
+          type: boolean
+          description: True when an active CLIP key or cached CLIP/LoRA entries existed before cleanup.
+        previous_clip_key:
+          type:
+            - array
+            - "null"
+          items:
+            type: string
+          description: Previous single or dual CLIP cache key, if one was active.

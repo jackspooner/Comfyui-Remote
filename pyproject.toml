@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cutlery-remote"
+version = "0.1.0"
+description = "Standalone trusted remote-execution nodes for ComfyUI."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+dependencies = ["cutlery-workflow-contracts>=0.1.0,<0.2.0"]
+classifiers = [
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+]
+
+[tool.setuptools]
+packages = ["cutlery_remote_nodes", "cutlery_remote_nodes.cutlery_remote"]
+package-dir = { cutlery_remote_nodes = "." }
+include-package-data = false
+
+[tool.setuptools.package-data]
+cutlery_remote_nodes = [
+    ".env.example",
+    "README.md",
+    "SECURITY.md",
+    "LICENSE",
+    "docs/*.md",
+    "docs/*.yaml",
+    "web/*.js",
+]
+
+[project.urls]
+Repository = "https://github.com/jackspooner/Cutlery-Remote"
+Documentation = "https://github.com/jackspooner/Cutlery-Remote/tree/main/docs"
+Issues = "https://github.com/jackspooner/Cutlery-Remote/issues"
+
+[tool.comfy]
+PublisherId = "jackspooner"
+DisplayName = "Cutlery Remote"
+requires-comfyui = ">=0.28.0"
