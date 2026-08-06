@@ -155,6 +155,15 @@ class WF3RemoteGroupCompilerTests(unittest.TestCase):
         self.assertEqual(prompt["cutlery_remote_decode_1_1"]["class_type"], "WF3ConditioningFromBlob")
         self.assertEqual(prompt["3"]["inputs"]["conditioning"], ["cutlery_remote_decode_1_1", 0])
 
+    def test_compiles_labelled_group_using_only_its_endpoint(self):
+        workflow = _editor_workflow()
+        workflow["groups"][0]["title"] = "127.0.0.1:8889 // Local GPU"
+
+        prompt, _remaps, targets = compile_editor_remote_groups(workflow, _api_prompt())
+
+        self.assertEqual(targets, ["127.0.0.1:8889"])
+        self.assertEqual(prompt["cutlery_remote_group_1"]["inputs"]["remote_base_url"], "127.0.0.1:8889")
+
     def test_compiles_group_without_outbound_ports_as_terminal_executor(self):
         workflow = _editor_workflow()
         prompt = _api_prompt()

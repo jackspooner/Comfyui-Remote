@@ -42,6 +42,7 @@ const TARGET_RE = /^([A-Za-z0-9_.-]+):([1-9][0-9]{0,4})$/;
 const CURLY_TARGET_RE = /^([A-Za-z0-9_.-]+):\{([1-9][0-9]{0,4})\}$/;
 const CUTLERY_TARGET_RE = /^cutlery:\/\/([A-Za-z0-9_.-]+):([1-9][0-9]{0,4})$/;
 const CUTLERY_ALIAS_RE = /^cutlery:\/\/([A-Za-z0-9_.-]+)$/;
+const GROUP_LABEL_SEPARATOR = " // ";
 
 let fetchHookInstalled = false;
 let graphRefreshInstalled = false;
@@ -87,7 +88,9 @@ function hideExecutorTransportWidgets(node) {
 }
 
 function parseRemoteTargetTitle(title) {
-  const text = String(title ?? "").trim();
+  const titleText = String(title ?? "").trim();
+  const separatorIndex = titleText.indexOf(GROUP_LABEL_SEPARATOR);
+  const text = (separatorIndex >= 0 ? titleText.slice(0, separatorIndex) : titleText).trim();
   const aliasMatch = text.match(CUTLERY_ALIAS_RE);
   if (aliasMatch) {
     return `cutlery://${aliasMatch[1]}`;

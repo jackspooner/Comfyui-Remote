@@ -19,6 +19,7 @@ _PLAIN_TARGET_RE = re.compile(r"^(?P<host>[A-Za-z0-9_.-]+):(?P<port>[1-9][0-9]{0
 _CURLY_TARGET_RE = re.compile(r"^(?P<host>[A-Za-z0-9_.-]+):\{(?P<port>[1-9][0-9]{0,4})\}$")
 _CUTLERY_TARGET_RE = re.compile(r"^cutlery://(?P<host>[A-Za-z0-9_.-]+):(?P<port>[1-9][0-9]{0,4})$")
 _CUTLERY_ALIAS_RE = re.compile(r"^cutlery://(?P<alias>[A-Za-z0-9_.-]+)$")
+_GROUP_LABEL_SEPARATOR = " // "
 LEGACY_LOCAL_CONFIG_PATH = Path(__file__).resolve().parents[1] / "cutlery.local.json"
 LOCAL_CONFIG_PATH = data_path("config.json")
 _TARGET_FIELDS = frozenset({
@@ -59,8 +60,20 @@ class TrustedRemoteTarget:
     expose_node_prefixes: tuple[str, ...] = ()
 
 
+def remote_target_endpoint(value: object) -> str:
+    """Return the endpoint or alias portion of a labelled editor group title.
+
+    Group labels are presentation-only. Callers must resolve this returned
+    value before deciding whether a target is trusted or receives credentials.
+    """
+
+    text = str(value or "").strip()
+    endpoint, separator, _label = text.partition(_GROUP_LABEL_SEPARATOR)
+    return endpoint.strip() if separator else text
+
+
 def parse_remote_target(title: object) -> RemoteTarget | None:
-    text = str(title or "").strip()
+    text = remote_target_endpoint(title)
     match = _PLAIN_TARGET_RE.match(text) or _CURLY_TARGET_RE.match(text) or _CUTLERY_TARGET_RE.match(text)
     if match is None:
         return None
@@ -241,7 +254,8 @@ def resolve_trusted_remote_target(
     local listener could capture and reuse the shared remote token.
     """
 
-    text = str(value or "").strip()
+    supplied_text = str(value or "").strip()
+    text = remote_target_endpoint(supplied_text)
     if not text:
         raise ValueError("Cutlery remote target is required.")
     targets = configured_remote_targets(config_path)
@@ -268,6 +282,6 @@ def resolve_trusted_remote_target(
     configured = ", ".join(sorted(targets)) or "none"
     config_label = Path(config_path).name if config_path is not None else "CUTLERY_DATA_DIR/config.json"
     raise ValueError(
-        f"Cutlery remote target {text!r} is not trusted. Register it under remote_targets in "
+        f"Cutlery remote target {supplied_text!r} is not trusted. Register it under remote_targets in "
         f"{config_label}; configured aliases: {configured}."
     )

@@ -38,7 +38,7 @@ class RemoteModelFrontendBehaviorTests(unittest.TestCase):
             globalThis.app = {
               graph: {
                 _nodes: [],
-                _groups: [{ title: "192.0.2.247:8188", boundingRect: new Float64Array([0, 0, 400, 400]) }],
+                _groups: [{ title: "192.0.2.247:8188 // Remote renderer", boundingRect: new Float64Array([0, 0, 400, 400]) }],
                 setDirtyCanvas() {},
               },
               canvas: null,
