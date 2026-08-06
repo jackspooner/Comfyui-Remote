@@ -4,7 +4,7 @@ Standalone ComfyUI nodes for trusted, peer-to-peer remote execution. It includes
 
 ## Installation
 
-Install this repository into `ComfyUI/custom_nodes/Cutlery-Remote`. Install the released `cutlery-workflow-contracts` dependency, then restart ComfyUI. Cutlery Remote does not require the broader Cutlery Nodes package.
+Install this repository into `ComfyUI/custom_nodes/Cutlery-Remote`. Its declared dependency installs `cutlery-workflow-contracts` from the immutable GitHub commit for v0.1.0, then restart ComfyUI. Cutlery Remote does not require the broader Cutlery Nodes package.
 
 ## Quick setup
 
