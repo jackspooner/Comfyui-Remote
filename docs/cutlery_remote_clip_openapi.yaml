@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: Cutlery Remote CLIP API
   version: 2.0.0
-  description: Authenticated, default-disabled inbound Remote CLIP execution and materialization routes, plus always-available outbound discovery and clear-proxy branches.
+  description: Authenticated, default-disabled inbound Remote CLIP execution and materialization routes, plus always-available outbound discovery and clear-proxy branches. Outbound clients reject a declared or streamed JSON response larger than `CUTLERY_REMOTE_CLIP_RESPONSE_LIMIT_MB` (256 MiB by default) before JSON decoding.
 servers:
   - url: http://127.0.0.1:8188
 tags:

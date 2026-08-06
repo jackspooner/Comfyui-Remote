@@ -133,6 +133,32 @@ class _FakeVAE:
 
 
 class CutleryRemoteClipTests(unittest.TestCase):
+    def test_open_json_passes_configured_response_limit_to_http_client(self):
+        module = _load_remote_clip_module()
+        response = types.SimpleNamespace(status=200, body=b'{"ok":true}')
+
+        with (
+            mock.patch.dict(os.environ, {"CUTLERY_REMOTE_CLIP_RESPONSE_LIMIT_MB": "1"}, clear=True),
+            mock.patch.object(module, "interruptible_request_bytes", return_value=response) as request_bytes,
+        ):
+            self.assertEqual(module._open_json("GET", "http://remote.example/choices", timeout=2.0), {"ok": True})
+
+        self.assertEqual(request_bytes.call_args.kwargs["max_response_bytes"], 1024 * 1024)
+
+    def test_value_bundle_decode_uses_remote_clip_response_blob_limit(self):
+        module = _load_remote_clip_module()
+        module._remote_clip_response_limit_bytes = lambda: 7
+        module.decode_value_bundle = mock.Mock(return_value="decoded")
+
+        self.assertEqual(
+            module._decode_optional_image_bundle({"schema": "cutlery.remote.value_bundle.v1"}),
+            "decoded",
+        )
+        module.decode_value_bundle.assert_called_once_with(
+            {"schema": "cutlery.remote.value_bundle.v1"},
+            max_blob_bytes=7,
+        )
+
     def test_disabled_server_gate_runs_before_authorization_and_body_read(self):
         routes = _Routes()
         module = _load_remote_clip_module(routes)
@@ -1130,7 +1156,13 @@ class CutleryRemoteClipTests(unittest.TestCase):
             status = 200
             reason = "OK"
 
-            def read(self):
+            def __init__(self):
+                self._sent = False
+
+            def read(self, _size=None):
+                if self._sent:
+                    return b""
+                self._sent = True
                 return json.dumps(
                     {
                         "ok": True,
