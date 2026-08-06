@@ -9,7 +9,7 @@ from typing import Any
 
 from .boundary_types import SUPPORTED_BOUNDARY_PORT_TYPES, normalize_boundary_port_type
 from .model_inputs import iter_loader_model_inputs
-from .target import remote_target_endpoint
+from .target import remote_target_alias, remote_target_endpoint
 
 
 MAX_PORTS = 64
@@ -20,7 +20,6 @@ REMOTE_CACHE_POLICY = "remote"
 TARGET_RE = re.compile(r"^([A-Za-z0-9_.-]+):([1-9][0-9]{0,4})$")
 CURLY_TARGET_RE = re.compile(r"^([A-Za-z0-9_.-]+):\{([1-9][0-9]{0,4})\}$")
 CUTLERY_TARGET_RE = re.compile(r"^cutlery://([A-Za-z0-9_.-]+):([1-9][0-9]{0,4})$")
-CUTLERY_ALIAS_RE = re.compile(r"^cutlery://([A-Za-z0-9_.-]+)$")
 OUTBOUND_BLOB_ADAPTERS = {
     "mask": ("WF3MaskToBlob", "mask", "WF3MaskFromBlob"),
     "latent": ("WF3LatentToBlob", "latent", "WF3LatentFromBlob"),
@@ -62,9 +61,9 @@ class _EditorProjection:
 
 def _remote_target(title: Any) -> str | None:
     text = remote_target_endpoint(title)
-    alias_match = CUTLERY_ALIAS_RE.fullmatch(text)
-    if alias_match:
-        return f"cutlery://{alias_match.group(1)}"
+    alias = remote_target_alias(text)
+    if alias:
+        return f"cutlery://{alias}"
     match = TARGET_RE.fullmatch(text) or CURLY_TARGET_RE.fullmatch(text) or CUTLERY_TARGET_RE.fullmatch(text)
     if match is None:
         return None

@@ -79,6 +79,42 @@ class RemoteTargetTests(unittest.TestCase):
         self.assertEqual(target.base_url, "http://127.0.0.1:8189")
         self.assertEqual(by_origin, target)
 
+    def test_legacy_single_slash_alias_resolves_only_when_configured(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "remote_targets": {
+                            "trellis2": {"base_url": "http://127.0.0.1:8890"},
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            target = resolve_trusted_remote_target("cutlery/trellis2 // Trellis worker", config_path=config_path)
+
+        self.assertEqual(target.name, "trellis2")
+        self.assertEqual(target.base_url, "http://127.0.0.1:8890")
+
+    def test_legacy_single_slash_alias_is_rejected_when_unconfigured(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "remote_targets": {
+                            "secondpc": {"base_url": "http://127.0.0.1:8889"},
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "not trusted"):
+                resolve_trusted_remote_target("cutlery/trellis2", config_path=config_path)
+
     def test_group_label_cannot_make_an_untrusted_endpoint_trusted(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "config.json"
