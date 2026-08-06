@@ -4,6 +4,7 @@ __pycache__/
 build/
 dist/
 wheelhouse/
+.codex-wheel-check/
 .pytest_cache/
 .venv/
 .venvs/
