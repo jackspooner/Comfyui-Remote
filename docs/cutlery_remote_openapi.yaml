@@ -9,6 +9,8 @@ info:
     shared bearer token. Browser proxies resolve only targets registered in
     `CUTLERY_DATA_DIR/config.json`, including explicitly registered loopback tunnel
     origins, and never accept an arbitrary network destination.
+    Generic outbound clients reject declared and streamed JSON responses larger
+    than `CUTLERY_REMOTE_RESPONSE_LIMIT_MB` (384 MiB by default) before parsing.
 servers:
   - url: http://127.0.0.1:8188
 tags:

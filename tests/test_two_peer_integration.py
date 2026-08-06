@@ -20,6 +20,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -30,13 +31,31 @@ from cutlery_remote.capabilities import REMOTE_PROTOCOL_VERSION, validate_remote
 
 
 GATE_ENV = "CUTLERY_REMOTE_TWO_PEER"
+RELEASE_ENV = "CUTLERY_REMOTE_TWO_PEER_RELEASE"
 LOCAL_URL_ENV = "CUTLERY_REMOTE_TWO_PEER_LOCAL_URL"
 REMOTE_URL_ENV = "CUTLERY_REMOTE_TWO_PEER_REMOTE_URL"
 TOKEN_ENV = "CUTLERY_REMOTE_TWO_PEER_TOKEN"
 GROUP_RUN_BODY_ENV = "CUTLERY_REMOTE_TWO_PEER_GROUP_RUN_BODY"
+BOUNDARY_GROUP_RUN_BODY_ENV = "CUTLERY_REMOTE_TWO_PEER_BOUNDARY_GROUP_RUN_BODY"
 PRELOAD_BODY_ENV = "CUTLERY_REMOTE_TWO_PEER_PRELOAD_BODY"
 CANCEL_PROMPT_ID_ENV = "CUTLERY_REMOTE_TWO_PEER_CANCEL_PROMPT_ID"
 STREAM_BODY_ENV = "CUTLERY_REMOTE_TWO_PEER_STREAM_BODY"
+CLIP_TEXT_ENCODE_BODY_ENV = "CUTLERY_REMOTE_TWO_PEER_CLIP_TEXT_ENCODE_BODY"
+CLIP_DUAL_TEXT_ENCODE_BODY_ENV = "CUTLERY_REMOTE_TWO_PEER_CLIP_DUAL_TEXT_ENCODE_BODY"
+CLIP_QWEN_IMAGE_EDIT_BODY_ENV = "CUTLERY_REMOTE_TWO_PEER_CLIP_QWEN_IMAGE_EDIT_BODY"
+CLIP_LORA_TEXT_ENCODE_BODY_ENV = "CUTLERY_REMOTE_TWO_PEER_CLIP_LORA_TEXT_ENCODE_BODY"
+
+RELEASE_FIXTURE_ENVS = (
+    GROUP_RUN_BODY_ENV,
+    BOUNDARY_GROUP_RUN_BODY_ENV,
+    PRELOAD_BODY_ENV,
+    CANCEL_PROMPT_ID_ENV,
+    STREAM_BODY_ENV,
+    CLIP_TEXT_ENCODE_BODY_ENV,
+    CLIP_DUAL_TEXT_ENCODE_BODY_ENV,
+    CLIP_QWEN_IMAGE_EDIT_BODY_ENV,
+    CLIP_LORA_TEXT_ENCODE_BODY_ENV,
+)
 
 
 def _enabled(value: str | None) -> bool:
@@ -67,19 +86,25 @@ class TwoPeerConfig:
     local_url: str
     remote_url: str
     token: str
+    release_mode: bool
 
     @classmethod
     def from_environment(cls) -> "TwoPeerConfig":
         missing = [name for name in (LOCAL_URL_ENV, REMOTE_URL_ENV, TOKEN_ENV) if not os.environ.get(name, "").strip()]
+        release_mode = _enabled(os.environ.get(RELEASE_ENV))
+        if release_mode:
+            missing.extend(name for name in RELEASE_FIXTURE_ENVS if not os.environ.get(name, "").strip())
         if missing:
+            required = ", ".join(dict.fromkeys(missing))
             raise ValueError(
-                f"{GATE_ENV}=1 requires " + ", ".join(missing) + ". "
+                f"{GATE_ENV}=1 requires {required}. "
                 "This gate does not read peer .env files or infer credentials."
             )
         return cls(
             local_url=_origin(os.environ[LOCAL_URL_ENV], LOCAL_URL_ENV),
             remote_url=_origin(os.environ[REMOTE_URL_ENV], REMOTE_URL_ENV),
             token=os.environ[TOKEN_ENV].strip(),
+            release_mode=release_mode,
         )
 
 
@@ -91,6 +116,15 @@ def _json_body(value: str, name: str) -> dict[str, Any]:
     if not isinstance(parsed, dict):
         raise AssertionError(f"{name} must contain a JSON object.")
     return parsed
+
+
+def _fixture_body(name: str, *, release_mode: bool) -> dict[str, Any] | None:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        if release_mode:
+            raise AssertionError(f"{RELEASE_ENV}=1 requires reviewed fixture {name}.")
+        return None
+    return _json_body(raw, name)
 
 
 def _request_json(
@@ -182,37 +216,47 @@ class TwoPeerIntegrationTests(_ConfiguredTwoPeerGate, unittest.TestCase):
         self.assertFalse(payload.get("ok"))
         self.assertIn("not trusted", str(payload.get("error") or "").lower())
 
-    def test_optional_group_run_fixture(self):
-        raw = os.environ.get(GROUP_RUN_BODY_ENV, "").strip()
-        if not raw:
+    def _run_group_fixture(self, fixture_env: str, label: str, *, require_outputs: bool = False):
+        body = _fixture_body(fixture_env, release_mode=self.config.release_mode)
+        if body is None:
             self.skipTest(f"Set {GROUP_RUN_BODY_ENV} to a reviewed compiled group request to execute this optional check.")
         status, payload = _request_json(
             "POST",
             f"{self.config.remote_url}/cutlery/remote/group/run",
             token=self.config.token,
-            body=_json_body(raw, GROUP_RUN_BODY_ENV),
+            body=body,
             timeout_seconds=600.0,
         )
         self.assertEqual(status, 200)
-        self.assertTrue(payload.get("ok"), payload.get("error") or "remote group fixture failed")
+        self.assertTrue(payload.get("ok"), payload.get("error") or f"{label} fixture failed")
+        if require_outputs:
+            self.assertIsInstance(payload.get("outputs"), dict, f"{label} did not return serialized boundary outputs")
 
-    def test_optional_preload_or_materialization_fixture(self):
-        raw = os.environ.get(PRELOAD_BODY_ENV, "").strip()
-        if not raw:
+    def test_group_run_fixture(self):
+        self._run_group_fixture(GROUP_RUN_BODY_ENV, "remote group")
+
+    def test_boundary_group_run_fixture(self):
+        self._run_group_fixture(BOUNDARY_GROUP_RUN_BODY_ENV, "boundary group", require_outputs=True)
+
+    def test_preload_or_materialization_fixture_runs_cold_and_warm(self):
+        body = _fixture_body(PRELOAD_BODY_ENV, release_mode=self.config.release_mode)
+        if body is None:
             self.skipTest(
                 f"Set {PRELOAD_BODY_ENV} to a reviewed preload request to check cold/warm materialization on the remote peer."
             )
-        status, payload = _request_json(
-            "POST",
-            f"{self.config.remote_url}/cutlery/remote/group/preload",
-            token=self.config.token,
-            body=_json_body(raw, PRELOAD_BODY_ENV),
-            timeout_seconds=600.0,
-        )
-        self.assertEqual(status, 200)
-        self.assertTrue(payload.get("ok"), payload.get("error") or "remote preload fixture failed")
+        for state in ("cold", "warm"):
+            with self.subTest(state=state):
+                status, payload = _request_json(
+                    "POST",
+                    f"{self.config.remote_url}/cutlery/remote/group/preload",
+                    token=self.config.token,
+                    body=body,
+                    timeout_seconds=600.0,
+                )
+                self.assertEqual(status, 200)
+                self.assertTrue(payload.get("ok"), payload.get("error") or f"{state} remote preload fixture failed")
 
-    def test_optional_prompt_cancellation_fixture(self):
+    def test_prompt_cancellation_fixture(self):
         prompt_id = os.environ.get(CANCEL_PROMPT_ID_ENV, "").strip()
         if not prompt_id:
             self.skipTest(
@@ -230,11 +274,54 @@ class TwoPeerIntegrationTests(_ConfiguredTwoPeerGate, unittest.TestCase):
         self.assertEqual(payload.get("remote_prompt_id"), prompt_id)
         self.assertTrue(payload.get("cancellation_recorded"))
 
+    def _run_remote_clip_fixture(self, fixture_env: str, path: str, label: str):
+        body = _fixture_body(fixture_env, release_mode=self.config.release_mode)
+        if body is None:
+            self.skipTest(f"Set {fixture_env} to a reviewed {label} request.")
+        status, payload = _request_json(
+            "POST",
+            f"{self.config.remote_url}{path}",
+            token=self.config.token,
+            body=body,
+            timeout_seconds=600.0,
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(payload.get("ok"), payload.get("error") or f"{label} fixture failed")
+        self.assertIsInstance(payload.get("conditioning"), dict, f"{label} did not return a conditioning bundle")
+
+    def test_remote_clip_text_encode_fixture(self):
+        self._run_remote_clip_fixture(
+            CLIP_TEXT_ENCODE_BODY_ENV,
+            "/cutlery/remote/clip/text-encode",
+            "Remote CLIP text-encode",
+        )
+
+    def test_remote_clip_dual_text_encode_fixture(self):
+        self._run_remote_clip_fixture(
+            CLIP_DUAL_TEXT_ENCODE_BODY_ENV,
+            "/cutlery/remote/clip/dual-text-encode",
+            "Remote CLIP dual text-encode",
+        )
+
+    def test_remote_clip_qwen_image_edit_fixture(self):
+        self._run_remote_clip_fixture(
+            CLIP_QWEN_IMAGE_EDIT_BODY_ENV,
+            "/cutlery/remote/clip/qwen-image-edit-plus",
+            "Remote CLIP Qwen image-edit",
+        )
+
+    def test_remote_clip_lora_text_encode_fixture(self):
+        self._run_remote_clip_fixture(
+            CLIP_LORA_TEXT_ENCODE_BODY_ENV,
+            "/cutlery/remote/clip/text-encode",
+            "Remote CLIP LoRA materialization and text-encode",
+        )
+
 
 class TwoPeerProgressIntegrationTests(_ConfiguredTwoPeerGate, unittest.IsolatedAsyncioTestCase):
-    async def test_optional_progress_stream_fixture(self):
-        raw = os.environ.get(STREAM_BODY_ENV, "").strip()
-        if not raw:
+    async def test_progress_stream_fixture(self):
+        body = _fixture_body(STREAM_BODY_ENV, release_mode=self.config.release_mode)
+        if body is None:
             self.skipTest(
                 f"Set {STREAM_BODY_ENV} to a reviewed streamed group request that emits at least one progress envelope."
             )
@@ -253,7 +340,7 @@ class TwoPeerProgressIntegrationTests(_ConfiguredTwoPeerGate, unittest.IsolatedA
         headers = {"Authorization": f"Bearer {self.config.token}"}
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.ws_connect(websocket_url, headers=headers, heartbeat=30.0) as websocket:
-                await websocket.send_json(_json_body(raw, STREAM_BODY_ENV))
+                await websocket.send_json(body)
                 async for message in websocket:
                     if message.type != aiohttp.WSMsgType.TEXT:
                         self.fail("Remote progress stream closed without a text terminal envelope.")
@@ -270,6 +357,53 @@ class TwoPeerProgressIntegrationTests(_ConfiguredTwoPeerGate, unittest.IsolatedA
         self.assertIsNotNone(terminal, "Remote progress stream did not return a terminal envelope.")
         self.assertEqual(terminal.get("type"), "result", terminal.get("data"))
         self.assertTrue(terminal.get("data", {}).get("ok"), terminal.get("data"))
+
+
+class TwoPeerReleaseConfigurationTests(unittest.TestCase):
+    """Verify release-mode validation without contacting a ComfyUI peer."""
+
+    def _base_environment(self) -> dict[str, str]:
+        return {
+            GATE_ENV: "1",
+            LOCAL_URL_ENV: "http://127.0.0.1:8888",
+            REMOTE_URL_ENV: "http://127.0.0.1:8889",
+            TOKEN_ENV: "test-token",
+        }
+
+    def test_non_release_gate_does_not_require_execution_fixtures(self):
+        with patch.dict(os.environ, self._base_environment(), clear=True):
+            config = TwoPeerConfig.from_environment()
+        self.assertFalse(config.release_mode)
+
+    def test_release_gate_lists_every_missing_reviewed_fixture_before_any_network_work(self):
+        environment = self._base_environment()
+        environment[RELEASE_ENV] = "1"
+        with patch.dict(os.environ, environment, clear=True):
+            with self.assertRaisesRegex(ValueError, GROUP_RUN_BODY_ENV) as error:
+                TwoPeerConfig.from_environment()
+        message = str(error.exception)
+        for name in RELEASE_FIXTURE_ENVS:
+            self.assertIn(name, message)
+
+    def test_release_gate_accepts_all_reviewed_execution_fixtures(self):
+        environment = self._base_environment()
+        environment.update(
+            {
+                RELEASE_ENV: "1",
+                GROUP_RUN_BODY_ENV: "{}",
+                BOUNDARY_GROUP_RUN_BODY_ENV: "{}",
+                PRELOAD_BODY_ENV: "{}",
+                CANCEL_PROMPT_ID_ENV: "pending-release-job",
+                STREAM_BODY_ENV: "{}",
+                CLIP_TEXT_ENCODE_BODY_ENV: "{}",
+                CLIP_DUAL_TEXT_ENCODE_BODY_ENV: "{}",
+                CLIP_QWEN_IMAGE_EDIT_BODY_ENV: "{}",
+                CLIP_LORA_TEXT_ENCODE_BODY_ENV: "{}",
+            }
+        )
+        with patch.dict(os.environ, environment, clear=True):
+            config = TwoPeerConfig.from_environment()
+        self.assertTrue(config.release_mode)
 
 
 if __name__ == "__main__":

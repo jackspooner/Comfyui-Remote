@@ -521,6 +521,7 @@ class RemoteModelNodeTests(unittest.TestCase):
             auth_headers={"Authorization": "Bearer abc123"},
             timeout_seconds=7,
             check_cancelled=module.throw_if_interrupted,
+            max_response_bytes=module.REMOTE_RESPONSE_LIMIT_BYTES,
         )
         resolve_names = [
             call["body"]["model_name"]

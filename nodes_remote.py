@@ -19,6 +19,7 @@ import uuid
 import subprocess
 
 from .cutlery_interrupt import (
+    read_response_bytes_async,
     request_bytes as interruptible_request_bytes,
     request_bytes_uninterruptible,
     throw_if_interrupted,
@@ -61,6 +62,7 @@ from .cutlery_remote.model_preparation import (
 )
 from .cutlery_remote.model_transfer import copy_model_file_to_remote
 from .cutlery_remote.node_definitions import NodeDefinitionRequestError, build_node_definitions_payload
+from .cutlery_remote.dotenv import env_value
 from .cutlery_remote.progress import ProgressMirror, parse_progress_mapping
 from .cutlery_remote.remote_job import RemoteExecutionJob
 from .cutlery_remote.registry_proxy import (
@@ -93,6 +95,9 @@ REMOTE_GROUP_CACHE_POLICY_REMOTE = "remote"
 REMOTE_GROUP_CACHE_POLICY_SENDER_V1 = "sender-v1"
 REMOTE_EARLY_MODEL_PRELOAD_ENV = "CUTLERY_REMOTE_EARLY_MODEL_PRELOAD_ENABLED"
 REMOTE_EARLY_MODEL_PRELOAD_ENABLED = strict_bool(REMOTE_EARLY_MODEL_PRELOAD_ENV, True)
+REMOTE_RESPONSE_LIMIT_MB_ENV = "CUTLERY_REMOTE_RESPONSE_LIMIT_MB"
+DEFAULT_REMOTE_RESPONSE_LIMIT_MB = 384
+REMOTE_RESPONSE_LIMIT_BYTES = DEFAULT_REMOTE_RESPONSE_LIMIT_MB * 1024 * 1024
 MAX_REMOTE_MEDIA_ITEM_BYTES = 128 * 1024 * 1024
 MAX_REMOTE_MEDIA_TOTAL_BYTES = 256 * 1024 * 1024
 MAX_REMOTE_STREAM_MESSAGE_BYTES = (MAX_REMOTE_MEDIA_TOTAL_BYTES * 4 // 3) + (4 * 1024 * 1024)
@@ -117,6 +122,19 @@ class RemoteHttpError(RuntimeError):
         super().__init__(message)
         self.status_code = status_code
         self.payload = payload or {}
+
+
+def _remote_response_limit_bytes(default: int = REMOTE_RESPONSE_LIMIT_BYTES) -> int:
+    raw = env_value(REMOTE_RESPONSE_LIMIT_MB_ENV)
+    if not raw:
+        return default
+    try:
+        value_mb = int(str(raw).strip())
+    except ValueError:
+        return default
+    if value_mb <= 0:
+        return default
+    return value_mb * 1024 * 1024
 
 
 def default_blob_store() -> BlobStore:
@@ -216,6 +234,7 @@ def _remote_json(
             body=data,
             headers=headers,
             timeout_s=timeout_seconds or 60.0,
+            max_response_bytes=_remote_response_limit_bytes(),
             description=f"Cutlery Remote {method.upper()} {path}",
             logger=LOGGER,
             on_cancel=on_cancel,
@@ -279,8 +298,12 @@ async def _post_remote_json_async(
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(url, json=body, headers=headers) as response:
                 try:
-                    payload = await response.json(content_type=None)
-                except Exception as exc:
+                    raw = await read_response_bytes_async(
+                        response,
+                        max_response_bytes=_remote_response_limit_bytes(),
+                    )
+                    payload = json.loads(raw.decode("utf-8") or "{}")
+                except (UnicodeDecodeError, json.JSONDecodeError) as exc:
                     raise RuntimeError(
                         f"Remote Cutlery request returned invalid JSON with HTTP {response.status}."
                     ) from exc
@@ -309,6 +332,7 @@ def _interrupt_remote_prompt_best_effort(base_url: str, prompt_id: str, *, token
             body=b"{}",
             headers={"Accept": "application/json", "Content-Type": "application/json", **build_auth_headers(str(token or ""))},
             timeout_s=10.0,
+            max_response_bytes=_remote_response_limit_bytes(),
         )
         if response.status >= 400:
             LOGGER.warning(
@@ -740,6 +764,7 @@ def _ensure_remote_lora_reference(
         auth_headers=build_auth_headers(str(token or "")),
         timeout_seconds=timeout_seconds,
         check_cancelled=throw_if_interrupted,
+        max_response_bytes=_remote_response_limit_bytes(),
     )
     remote_name = str(materialized.get("name") or "").strip()
     LOGGER.info(

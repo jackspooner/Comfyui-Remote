@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import contextlib
 import importlib.util
 import logging
 import os
@@ -36,6 +37,43 @@ class _Routes:
             return fn
 
         return decorator
+
+
+class _AsyncResponseContent:
+    def __init__(self, chunks):
+        self.chunks = list(chunks)
+        self.read_sizes = []
+
+    async def read(self, size):
+        self.read_sizes.append(size)
+        return self.chunks.pop(0) if self.chunks else b""
+
+
+class _AsyncResponse:
+    def __init__(self, *, status, chunks, content_length=None):
+        self.status = status
+        self.content_length = content_length
+        self.content = _AsyncResponseContent(chunks)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return False
+
+
+class _AsyncSession:
+    def __init__(self, response, **_kwargs):
+        self.response = response
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return False
+
+    def post(self, *_args, **_kwargs):
+        return self.response
 
 
 def _load_nodes_remote(routes, folder_paths=None):
@@ -95,6 +133,60 @@ def _load_nodes_remote(routes, folder_paths=None):
 
 
 class RemoteRoutesTests(unittest.TestCase):
+    def test_generic_remote_json_uses_configured_response_limit(self):
+        routes = _Routes()
+        module = _load_nodes_remote(routes)
+        response = types.SimpleNamespace(status=200, body=b'{"ok":true}')
+
+        with (
+            mock.patch.dict(os.environ, {"CUTLERY_REMOTE_RESPONSE_LIMIT_MB": "1"}, clear=False),
+            mock.patch.object(module, "interruptible_request_bytes", return_value=response) as request_bytes,
+            mock.patch.object(module, "lease_remote_target", return_value=contextlib.nullcontext()),
+        ):
+            self.assertEqual(module._get_remote_json("renderhost", "/cutlery/remote/capabilities"), {"ok": True})
+
+        self.assertEqual(request_bytes.call_args.kwargs["max_response_bytes"], 1024 * 1024)
+
+    def test_async_generic_remote_json_rejects_declared_oversize_response_before_reading(self):
+        routes = _Routes()
+        module = _load_nodes_remote(routes)
+        response = _AsyncResponse(status=200, chunks=[b"never read"], content_length=2 * 1024 * 1024)
+        worker_lease = types.SimpleNamespace(release=mock.Mock())
+        module.aiohttp = types.SimpleNamespace(
+            ClientTimeout=lambda **_kwargs: object(),
+            ClientSession=lambda **_kwargs: _AsyncSession(response),
+        )
+
+        with (
+            mock.patch.dict(os.environ, {"CUTLERY_REMOTE_RESPONSE_LIMIT_MB": "1"}, clear=False),
+            mock.patch.object(module.asyncio, "to_thread", new=mock.AsyncMock(return_value=worker_lease)),
+        ):
+            with self.assertRaisesRegex(RuntimeError, r"declares 2097152 bytes.*1048576-byte limit"):
+                asyncio.run(module._post_remote_json_async("renderhost", "/cutlery/remote/node-definitions", {}))
+
+        self.assertEqual(response.content.read_sizes, [])
+        worker_lease.release.assert_called_once_with()
+
+    def test_async_generic_remote_json_rejects_chunked_oversize_response_while_reading(self):
+        routes = _Routes()
+        module = _load_nodes_remote(routes)
+        response = _AsyncResponse(status=200, chunks=[b"abc", b"def"], content_length=None)
+        worker_lease = types.SimpleNamespace(release=mock.Mock())
+        module.aiohttp = types.SimpleNamespace(
+            ClientTimeout=lambda **_kwargs: object(),
+            ClientSession=lambda **_kwargs: _AsyncSession(response),
+        )
+
+        with (
+            mock.patch.object(module, "_remote_response_limit_bytes", return_value=4),
+            mock.patch.object(module.asyncio, "to_thread", new=mock.AsyncMock(return_value=worker_lease)),
+        ):
+            with self.assertRaisesRegex(RuntimeError, r"exceeds the 4-byte limit"):
+                asyncio.run(module._post_remote_json_async("renderhost", "/cutlery/remote/node-definitions", {}))
+
+        self.assertEqual(len(response.content.read_sizes), 2)
+        worker_lease.release.assert_called_once_with()
+
     def test_disabled_server_gate_runs_before_authorization(self):
         routes = _Routes()
         module = _load_nodes_remote(routes)
