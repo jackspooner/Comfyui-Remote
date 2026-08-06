@@ -24,7 +24,7 @@ from .cutlery_interrupt import (
     request_bytes_uninterruptible,
     throw_if_interrupted,
 )
-from .cutlery_config import REMOTE_SERVER_ENV, data_path, strict_bool
+from .cutlery_config import REMOTE_SERVER_ENV, data_path, strict_bool, strict_positive_int
 from .cutlery_features import feature_disabled_response
 from .cutlery_lora_chain import (
     CUTLERY_LORA_CHAIN_PORT_TYPE,
@@ -62,7 +62,6 @@ from .cutlery_remote.model_preparation import (
 )
 from .cutlery_remote.model_transfer import copy_model_file_to_remote
 from .cutlery_remote.node_definitions import NodeDefinitionRequestError, build_node_definitions_payload
-from .cutlery_remote.dotenv import env_value
 from .cutlery_remote.progress import ProgressMirror, parse_progress_mapping
 from .cutlery_remote.remote_job import RemoteExecutionJob
 from .cutlery_remote.registry_proxy import (
@@ -125,16 +124,8 @@ class RemoteHttpError(RuntimeError):
 
 
 def _remote_response_limit_bytes(default: int = REMOTE_RESPONSE_LIMIT_BYTES) -> int:
-    raw = env_value(REMOTE_RESPONSE_LIMIT_MB_ENV)
-    if not raw:
-        return default
-    try:
-        value_mb = int(str(raw).strip())
-    except ValueError:
-        return default
-    if value_mb <= 0:
-        return default
-    return value_mb * 1024 * 1024
+    default_mb = default // (1024 * 1024)
+    return strict_positive_int(REMOTE_RESPONSE_LIMIT_MB_ENV, default_mb) * 1024 * 1024
 
 
 def default_blob_store() -> BlobStore:

@@ -133,6 +133,18 @@ def _load_nodes_remote(routes, folder_paths=None):
 
 
 class RemoteRoutesTests(unittest.TestCase):
+    def test_generic_remote_response_limit_rejects_invalid_configuration(self):
+        module = _load_nodes_remote(_Routes())
+
+        for value in ("0", "-1", "invalid", "1.5"):
+            with self.subTest(value=value), mock.patch.dict(
+                os.environ,
+                {"CUTLERY_REMOTE_RESPONSE_LIMIT_MB": value},
+                clear=True,
+            ):
+                with self.assertRaisesRegex(ValueError, "CUTLERY_REMOTE_RESPONSE_LIMIT_MB must be a positive integer"):
+                    module._remote_response_limit_bytes()
+
     def test_generic_remote_json_uses_configured_response_limit(self):
         routes = _Routes()
         module = _load_nodes_remote(routes)
