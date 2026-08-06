@@ -38,7 +38,7 @@ def registry_paths() -> set[str]:
         if not path.is_file():
             continue
         relative = path.relative_to(ROOT).as_posix()
-        if relative in ignored_names or any(relative.startswith(prefix) for prefix in ignored_prefixes):
+        if relative in ignored_names or relative.endswith(".egg-info/PKG-INFO") or ".egg-info/" in relative or any(relative.startswith(prefix) for prefix in ignored_prefixes):
             continue
         if path.suffix in {".pyc", ".pyo"} or "__pycache__/" in relative:
             continue

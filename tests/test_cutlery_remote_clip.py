@@ -561,8 +561,22 @@ class CutleryRemoteClipTests(unittest.TestCase):
             "CUTLERY_REMOTE_CLIP_BASE_URL": "comfy-remote.example:8188",
         }
         module.env_value = lambda name, default="": values.get(name, default)
+        module.resolve_trusted_remote_target = mock.Mock(
+            return_value=types.SimpleNamespace(base_url="http://comfy-remote.example:8188")
+        )
 
         self.assertEqual(module.remote_clip_base_url(), "http://comfy-remote.example:8188")
+        module.resolve_trusted_remote_target.assert_called_once_with("comfy-remote.example:8188")
+
+    def test_remote_clip_refuses_an_untrusted_target_before_attaching_credentials(self):
+        module = _load_remote_clip_module()
+        module.env_value = lambda name, default="": {module.REMOTE_CLIP_BASE_URL_ENV: "http://untrusted.example:8188"}.get(name, default)
+        module._remote_clip_auth_headers = mock.Mock(side_effect=AssertionError("token must not be attached"))
+        module.resolve_trusted_remote_target = mock.Mock(side_effect=ValueError("not trusted"))
+
+        with self.assertRaisesRegex(ValueError, "not trusted"):
+            module._post_json("/cutlery/remote/clip/text-encode", {"prompt": "hello"})
+        module._remote_clip_auth_headers.assert_not_called()
 
     def test_remote_clip_remote_mode_has_no_outbound_target(self):
         module = _load_remote_clip_module()
@@ -904,6 +918,7 @@ class CutleryRemoteClipTests(unittest.TestCase):
         module = _load_remote_clip_module(routes=routes)
         module._post_json = mock.Mock(return_value={"ok": True, "deleted_count": 2, "proxied": True})
         module._clear_materialized_clips = mock.Mock(return_value={"ok": True, "deleted_count": 1})
+        module.resolve_trusted_remote_target = mock.Mock(return_value=types.SimpleNamespace(base_url="http://remote.example:8188"))
 
         with mock.patch.dict(
             os.environ,
@@ -1067,6 +1082,7 @@ class CutleryRemoteClipTests(unittest.TestCase):
         module = _load_remote_clip_module(routes=routes)
         module._post_json = mock.Mock(return_value={"ok": True, "deleted_count": 2, "proxied": True})
         module._clear_materialized_qwen_images = mock.Mock(return_value={"ok": True, "deleted_count": 1})
+        module.resolve_trusted_remote_target = mock.Mock(return_value=types.SimpleNamespace(base_url="http://remote.example:8188"))
 
         with mock.patch.dict(
             os.environ,
@@ -1256,6 +1272,7 @@ class CutleryRemoteClipTests(unittest.TestCase):
         module = _load_remote_clip_module(routes=routes)
         module._post_json = mock.Mock(return_value={"ok": True, "deleted_count": 2, "proxied": True})
         module._clear_materialized_loras = mock.Mock(return_value={"ok": True, "deleted_count": 1})
+        module.resolve_trusted_remote_target = mock.Mock(return_value=types.SimpleNamespace(base_url="http://remote.example:8188"))
 
         with mock.patch.dict(
             os.environ,
