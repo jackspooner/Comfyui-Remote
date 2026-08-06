@@ -8,7 +8,10 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Mapping
 
-from .cutlery_remote.dotenv import load_comfy_root_dotenv
+try:
+    from .cutlery_remote.dotenv import load_comfy_root_dotenv
+except ImportError:  # pragma: no cover - supports direct module imports in tests.
+    from cutlery_remote.dotenv import load_comfy_root_dotenv
 
 
 REMOTE_SERVER_ENV = "CUTLERY_REMOTE_SERVER_ENABLED"
