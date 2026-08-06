@@ -250,3 +250,28 @@ See [the Remote CLIP OpenAPI contract](cutlery_remote_clip_openapi.yaml) for req
 | A workflow blob is rejected | Regenerate it with the current Cutlery tensor-tree codec; legacy pickle-backed blobs are intentionally unsupported. |
 
 For endpoint-level debugging, first read `GET /cutlery/features` on the receiving host, then preflight generic peers with `/cutlery/remote/capabilities`. The feature endpoint intentionally does not reveal the token, configured targets, local paths, or the workflow-execution flag.
+
+## Two-peer release gate
+
+`tests/test_two_peer_integration.py` is an explicit, read-only-by-default integration gate for two already-configured peers. It is skipped by the normal portable suite, so a release candidate must run it separately with values supplied by the release operator rather than copied from a peer's `.env` file:
+
+```powershell
+$env:CUTLERY_REMOTE_TWO_PEER = "1"
+$env:CUTLERY_REMOTE_TWO_PEER_LOCAL_URL = "http://127.0.0.1:8888"
+$env:CUTLERY_REMOTE_TWO_PEER_REMOTE_URL = "http://127.0.0.1:8889"
+$env:CUTLERY_REMOTE_TWO_PEER_TOKEN = "<shared peer token>"
+python -m unittest tests.test_two_peer_integration -v
+```
+
+The required checks read each peer's feature descriptor, confirm the receiver's authenticated capability preflight, prove that missing and invalid bearer tokens both fail with `401`, verify protocol-skew rejection in the client validator, and ask the sender to reject a deliberately untrusted loopback origin before it can proxy or attach a token. The suite neither logs the token nor writes a peer's configuration, files, models, or workflow history.
+
+Optional fixtures cover the operations that inherently change transient execution state. Supply only reviewed payloads against dedicated test data:
+
+| Variable | Check |
+| --- | --- |
+| `CUTLERY_REMOTE_TWO_PEER_GROUP_RUN_BODY` | Runs one compiled group request on the receiving peer. |
+| `CUTLERY_REMOTE_TWO_PEER_STREAM_BODY` | Opens the authenticated progress WebSocket, submits one reviewed progress-emitting group request, and requires streamed progress plus a successful terminal result. |
+| `CUTLERY_REMOTE_TWO_PEER_PRELOAD_BODY` | Calls the peer preload route. Run the same reviewed fixture cold and warm to verify materialization/preload reuse. |
+| `CUTLERY_REMOTE_TWO_PEER_CANCEL_PROMPT_ID` | Cancels one dedicated pending remote-group prompt and verifies prompt-specific cancellation. |
+
+These optional variables are intentionally absent from `.env.example`: they are release-fixture inputs, not application configuration. Do not point them at a production job, model, or arbitrary target.
