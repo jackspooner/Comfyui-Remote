@@ -25,6 +25,69 @@ tags:
 security:
   - bearerAuth: []
 paths:
+  /cutlery/features:
+    get:
+      tags: [Remote discovery]
+      summary: Return locally enabled Cutlery Remote features
+      operationId: getCutleryRemoteFeatures
+      security: []
+      responses:
+        "200":
+          description: Enabled feature flags for this ComfyUI instance.
+          content:
+            application/json:
+              schema:
+                type: object
+  /cutlery/run:
+    post:
+      tags: [Remote execution]
+      summary: Run a portable Cutlery workflow
+      operationId: postCutleryWorkflowRun
+      description: Submits the supplied portable workflow to this ComfyUI instance when workflow execution is explicitly enabled.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Workflow outputs.
+          content:
+            application/json:
+              schema:
+                type: object
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          description: Workflow execution is disabled.
+        "504":
+          description: Workflow execution timed out.
+  /cutlery/wf3/run:
+    post:
+      tags: [Remote execution]
+      summary: Run a portable Cutlery workflow
+      operationId: postCutleryWf3Run
+      description: Compatibility path for the versioned WF3 portable workflow contract.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Workflow outputs.
+          content:
+            application/json:
+              schema:
+                type: object
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          description: Workflow execution is disabled.
+        "504":
+          description: Workflow execution timed out.
   /cutlery/remote/capabilities:
     get:
       tags: [Remote discovery]

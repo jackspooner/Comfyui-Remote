@@ -28,6 +28,7 @@ try:
     from .cutlery_remote.dotenv import env_value
     from .cutlery_remote.lora_materialization import materialize_remote_lora_file
     from .cutlery_remote.serialization import decode_value_bundle, encode_value_bundle
+    from .cutlery_remote.target import resolve_trusted_remote_target
     from .cutlery_clip_gguf import list_clip_text_encoder_names, load_gguf_clip, resolve_clip_text_encoder_path
 except ImportError:
     from cutlery_config import REMOTE_CLIP_SERVER_ENV
@@ -38,6 +39,7 @@ except ImportError:
     from cutlery_remote.dotenv import env_value
     from cutlery_remote.lora_materialization import materialize_remote_lora_file
     from cutlery_remote.serialization import decode_value_bundle, encode_value_bundle
+    from cutlery_remote.target import resolve_trusted_remote_target
     from cutlery_clip_gguf import list_clip_text_encoder_names, load_gguf_clip, resolve_clip_text_encoder_path
 
 try:
@@ -198,7 +200,10 @@ def _remote_clip_mode() -> str:
 def remote_clip_base_url() -> str:
     if _remote_clip_mode() == REMOTE_CLIP_MODE_REMOTE:
         return ""
-    return _clean_base_url(env_value(REMOTE_CLIP_BASE_URL_ENV))
+    configured_target = env_value(REMOTE_CLIP_BASE_URL_ENV)
+    if not configured_target:
+        return ""
+    return resolve_trusted_remote_target(configured_target).base_url
 
 
 def _remote_clip_auth_token() -> str:
