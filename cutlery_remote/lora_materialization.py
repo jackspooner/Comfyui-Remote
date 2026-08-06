@@ -7,6 +7,11 @@ from pathlib import Path
 from typing import Callable, Mapping
 import urllib.parse
 
+try:
+    from ..cutlery_interrupt import read_response_bytes
+except ImportError:  # pragma: no cover - supports direct module imports in tests.
+    from cutlery_interrupt import read_response_bytes
+
 
 DEFAULT_UPLOAD_CHUNK_SIZE = 1024 * 1024
 MATERIALIZE_PATH = "/cutlery/remote/clip/loras/materialize"
@@ -31,6 +36,7 @@ def materialize_remote_lora_file(
     chunk_size: int = DEFAULT_UPLOAD_CHUNK_SIZE,
     check_cancelled: Callable[[], None] | None = None,
     on_chunk: Callable[[int], None] | None = None,
+    max_response_bytes: int | None = None,
 ) -> dict[str, object]:
     """Stream a local LoRA to the remote content-addressed materialization endpoint."""
 
@@ -69,7 +75,7 @@ def materialize_remote_lora_file(
         if check_cancelled is not None:
             check_cancelled()
         response = connection.getresponse()
-        raw = response.read().decode("utf-8", errors="replace")
+        raw = read_response_bytes(response, max_response_bytes=max_response_bytes).decode("utf-8", errors="replace")
         if int(getattr(response, "status", 0) or 0) >= 400:
             raise RuntimeError(f"Remote LoRA materialization failed with HTTP {response.status}: {raw}")
         payload = json.loads(raw)

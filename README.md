@@ -17,7 +17,7 @@ Read [remote execution](docs/remote-execution.md), [configuration](docs/configur
 
 ## Security and network behavior
 
-Inbound roles are disabled by default. Outbound requests are restricted to explicit configured targets, and bearer tokens are attached only after that trust check. Servers perform constant-time bearer validation, bound transfers, verify file hashes, and promote received files atomically. The browser frontend is not a general-purpose origin proxy.
+Inbound roles are disabled by default. Outbound requests are restricted to explicit configured targets, and bearer tokens are attached only after that trust check. Servers perform constant-time bearer validation, bound transfers, verify file hashes, and promote received files atomically. Remote CLIP clients cap declared and streamed JSON responses before decoding them. The browser frontend is not a general-purpose origin proxy.
 
 ## Testing and release
 

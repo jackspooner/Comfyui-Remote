@@ -899,7 +899,7 @@ def _decode_remote_values(values: Any) -> dict[str, Any]:
     decoded: dict[str, Any] = {}
     for key, value in values.items():
         if isinstance(value, dict) and value.get("schema") == VALUE_BUNDLE_SCHEMA:
-            decoded[str(key)] = decode_value_bundle(value)
+            decoded[str(key)] = decode_value_bundle(value, max_blob_bytes=MAX_REMOTE_MEDIA_ITEM_BYTES)
         else:
             decoded[str(key)] = value
     return decoded
@@ -1568,7 +1568,7 @@ def _decode_output_value(
     path: str = "Remote workflow output",
 ) -> Any:
     if isinstance(value, dict) and value.get("schema") == VALUE_BUNDLE_SCHEMA:
-        decoded = decode_value_bundle(value)
+        decoded = decode_value_bundle(value, max_blob_bytes=MAX_REMOTE_MEDIA_ITEM_BYTES)
         return _materialize_remote_media_value(decoded, prompt_id=prompt_id, path=path)
     if isinstance(value, dict) and "value" in value:
         return _materialize_remote_media_value(

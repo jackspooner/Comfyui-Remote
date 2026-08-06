@@ -230,8 +230,9 @@ Uploads use temporary files, validate the supplied SHA-256, and atomically final
 | LoRA | 4096 MiB (4 GiB) |
 | CLIP/text encoder | 2048 MiB |
 | Qwen input image or Qwen encode request body | 2048 MiB |
+| Remote CLIP JSON response buffered by the client | 256 MiB |
 
-The receiver enforces limits against streamed bytes and returns `413` when exceeded. Increase limits only when the network boundary, storage, and model provenance are trusted.
+The receiver enforces upload limits against streamed bytes and returns `413` when exceeded. Before decoding JSON, the client rejects Remote CLIP responses whose declared `Content-Length` or streamed body exceeds `CUTLERY_REMOTE_CLIP_RESPONSE_LIMIT_MB`; this also bounds an individual decoded value-bundle blob. Increase limits only when the network boundary, storage, and model provenance are trusted.
 
 See [the Remote CLIP OpenAPI contract](cutlery_remote_clip_openapi.yaml) for request schemas, materialization headers, response bundles, and cleanup semantics.
 

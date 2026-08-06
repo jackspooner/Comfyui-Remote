@@ -22,7 +22,11 @@ import uuid
 try:
     from .cutlery_config import REMOTE_CLIP_SERVER_ENV
     from .cutlery_features import feature_disabled_response
-    from .cutlery_interrupt import request_bytes as interruptible_request_bytes, throw_if_interrupted
+    from .cutlery_interrupt import (
+        read_response_bytes,
+        request_bytes as interruptible_request_bytes,
+        throw_if_interrupted,
+    )
     from .cutlery_lora_chain import CUTLERY_LORA_CHAIN, lora_chain_entries
     from .cutlery_remote.auth import build_auth_headers, configured_remote_token, is_authorized
     from .cutlery_remote.dotenv import env_value
@@ -33,7 +37,7 @@ try:
 except ImportError:
     from cutlery_config import REMOTE_CLIP_SERVER_ENV
     from cutlery_features import feature_disabled_response
-    from cutlery_interrupt import request_bytes as interruptible_request_bytes, throw_if_interrupted
+    from cutlery_interrupt import read_response_bytes, request_bytes as interruptible_request_bytes, throw_if_interrupted
     from cutlery_lora_chain import CUTLERY_LORA_CHAIN, lora_chain_entries
     from cutlery_remote.auth import build_auth_headers, configured_remote_token, is_authorized
     from cutlery_remote.dotenv import env_value
@@ -58,6 +62,7 @@ REMOTE_CLIP_TIMEOUT_ENV = "CUTLERY_REMOTE_CLIP_TIMEOUT_S"
 REMOTE_CLIP_ENCODE_TIMEOUT_ENV = "CUTLERY_REMOTE_CLIP_ENCODE_TIMEOUT_S"
 REMOTE_CLIP_LORA_UPLOAD_LIMIT_MB_ENV = "CUTLERY_REMOTE_CLIP_LORA_UPLOAD_LIMIT_MB"
 REMOTE_CLIP_FILE_UPLOAD_LIMIT_MB_ENV = "CUTLERY_REMOTE_CLIP_FILE_UPLOAD_LIMIT_MB"
+REMOTE_CLIP_RESPONSE_LIMIT_MB_ENV = "CUTLERY_REMOTE_CLIP_RESPONSE_LIMIT_MB"
 REMOTE_TOKEN_ENV = "CUTLERY_REMOTE_TOKEN"
 REMOTE_CLIP_MODE_DIRECT = "direct"
 REMOTE_CLIP_MODE_REMOTE = "remote"
@@ -71,8 +76,10 @@ DEFAULT_TIMEOUT_SECONDS = 60.0
 DEFAULT_ENCODE_TIMEOUT_SECONDS = 600.0
 DEFAULT_LORA_UPLOAD_LIMIT_MB = 4096
 DEFAULT_CLIP_UPLOAD_LIMIT_MB = 2048
+DEFAULT_RESPONSE_LIMIT_MB = 256
 REMOTE_CLIP_LORA_UPLOAD_LIMIT_BYTES = DEFAULT_LORA_UPLOAD_LIMIT_MB * 1024 * 1024
 REMOTE_CLIP_FILE_UPLOAD_LIMIT_BYTES = DEFAULT_CLIP_UPLOAD_LIMIT_MB * 1024 * 1024
+REMOTE_CLIP_RESPONSE_LIMIT_BYTES = DEFAULT_RESPONSE_LIMIT_MB * 1024 * 1024
 REMOTE_CLIP_CONDITIONING_CACHE_MAX_ENTRIES = 32
 INVENTORY_TIMEOUT_SECONDS = DEFAULT_TIMEOUT_SECONDS
 WIDGET_INVENTORY_TIMEOUT_SECONDS = 5.0
@@ -269,6 +276,19 @@ def _remote_clip_file_upload_limit_bytes(default: int = REMOTE_CLIP_FILE_UPLOAD_
     return value_mb * 1024 * 1024
 
 
+def _remote_clip_response_limit_bytes(default: int = REMOTE_CLIP_RESPONSE_LIMIT_BYTES) -> int:
+    raw = env_value(REMOTE_CLIP_RESPONSE_LIMIT_MB_ENV)
+    if not raw:
+        return default
+    try:
+        value_mb = int(str(raw).strip())
+    except ValueError:
+        return default
+    if value_mb <= 0:
+        return default
+    return value_mb * 1024 * 1024
+
+
 def _raise_request_body_limit(request: Any, limit_bytes: int) -> None:
     current = int(getattr(request, "_client_max_size", 0) or 0)
     if current and current >= limit_bytes:
@@ -350,7 +370,10 @@ def _post_file(
                     progress.add(len(chunk), source_name=source_name, source_label=progress_label)
         throw_if_interrupted()
         response = connection.getresponse()
-        raw = response.read().decode("utf-8", errors="replace")
+        raw = read_response_bytes(
+            response,
+            max_response_bytes=_remote_clip_response_limit_bytes(),
+        ).decode("utf-8", errors="replace")
         if int(getattr(response, "status", 0) or 0) >= 400:
             raise RuntimeError(f"Remote CLIP request failed with HTTP {response.status}: {raw}")
         payload = json.loads(raw)
@@ -385,6 +408,7 @@ def _open_json(method: str, url: str, *, data: bytes | None = None, headers: dic
             body=data,
             headers=headers or {},
             timeout_s=timeout,
+            max_response_bytes=_remote_clip_response_limit_bytes(),
             description=f"Remote CLIP {method.upper()} {urllib.parse.urlparse(url).path or url}",
             logger=LOGGER,
         )
@@ -1058,6 +1082,7 @@ def _materialize_lora_to_remote(
         chunk_size=REMOTE_CLIP_UPLOAD_CHUNK_SIZE,
         check_cancelled=throw_if_interrupted,
         on_chunk=lambda copied: upload_progress.add(copied, source_name=local_name, source_label="LoRA"),
+        max_response_bytes=_remote_clip_response_limit_bytes(),
     )
     if not response.get("ok"):
         raise RuntimeError(str(response.get("error") or "Remote LoRA materialization failed."))
@@ -2043,7 +2068,7 @@ def _decode_optional_image_bundle(bundle: Any):
         return _decode_image_file_bundle(bundle)
     if bundle.get("schema") == REMOTE_CLIP_IMAGE_FILE_REF_BUNDLE_SCHEMA:
         return _decode_image_file_ref_bundle(bundle)
-    return decode_value_bundle(bundle)
+    return decode_value_bundle(bundle, max_blob_bytes=_remote_clip_response_limit_bytes())
 
 
 def _qwen_image_edit_plus_conditioning(clip, prompt: str, *, vae=None, image1=None, image2=None, image3=None):
@@ -2678,7 +2703,7 @@ class CutleryRemoteClipTextEncode:
                 len(payload["loras"]),
                 len(payload["prompt"]),
             )
-            return (decode_value_bundle(cached_bundle),)
+            return (decode_value_bundle(cached_bundle, max_blob_bytes=_remote_clip_response_limit_bytes()),)
         LOGGER.info(
             "[Cutlery Remote CLIP] Dispatching remote encode text_encoder=%s clip_type=%s lora_count=%s prompt_chars=%s",
             payload["text_encoder"],
@@ -2688,7 +2713,7 @@ class CutleryRemoteClipTextEncode:
         )
         bundle = post_remote_clip_encode(payload)
         _remember_remote_conditioning(cache_key, bundle)
-        return (decode_value_bundle(bundle),)
+        return (decode_value_bundle(bundle, max_blob_bytes=_remote_clip_response_limit_bytes()),)
 
 
 class CutleryRemoteDualClipTextEncode:
@@ -2765,7 +2790,7 @@ class CutleryRemoteDualClipTextEncode:
                 len(payload["loras"]),
                 len(payload["prompt"]),
             )
-            return (decode_value_bundle(cached_bundle),)
+            return (decode_value_bundle(cached_bundle, max_blob_bytes=_remote_clip_response_limit_bytes()),)
         LOGGER.info(
             "[Cutlery Remote CLIP] Dispatching remote dual encode clip1=%s clip2=%s clip_type=%s lora_count=%s prompt_chars=%s",
             payload["clip_name1"],
@@ -2776,7 +2801,7 @@ class CutleryRemoteDualClipTextEncode:
         )
         bundle = post_remote_dual_clip_encode(payload)
         _remember_remote_conditioning(cache_key, bundle)
-        return (decode_value_bundle(bundle),)
+        return (decode_value_bundle(bundle, max_blob_bytes=_remote_clip_response_limit_bytes()),)
 
 
 class CutleryRemoteTextEncodeQwenImageEditPlus:
@@ -2862,7 +2887,7 @@ class CutleryRemoteTextEncodeQwenImageEditPlus:
                 len(images),
                 len(payload["prompt"]),
             )
-            return (decode_value_bundle(cached_bundle),)
+            return (decode_value_bundle(cached_bundle, max_blob_bytes=_remote_clip_response_limit_bytes()),)
         LOGGER.info(
             "[Cutlery Remote CLIP] Dispatching remote Qwen image edit encode text_encoder=%s vae=%s image_count=%s prompt_chars=%s",
             payload["text_encoder"],
@@ -2872,7 +2897,7 @@ class CutleryRemoteTextEncodeQwenImageEditPlus:
         )
         bundle = post_remote_qwen_image_edit_plus_encode(payload)
         _remember_remote_conditioning(cache_key, bundle)
-        return (decode_value_bundle(bundle),)
+        return (decode_value_bundle(bundle, max_blob_bytes=_remote_clip_response_limit_bytes()),)
 
 
 register_remote_clip_routes()

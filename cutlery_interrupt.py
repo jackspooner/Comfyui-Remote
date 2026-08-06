@@ -15,6 +15,7 @@ from typing import Any, TypeVar
 LOGGER = logging.getLogger("cutlery.interrupt")
 DEFAULT_POLL_INTERVAL_S = 0.25
 DEFAULT_TERMINATE_TIMEOUT_S = 10.0
+HTTP_RESPONSE_READ_CHUNK_SIZE = 64 * 1024
 
 T = TypeVar("T")
 
@@ -46,6 +47,49 @@ class HttpRequestAbortHandle:
             connection = self._connection
         if connection is not None:
             connection.close()
+
+
+def _response_content_length(response: Any) -> int | None:
+    headers = getattr(response, "headers", None)
+    getter = getattr(headers, "get", None)
+    value = getter("Content-Length") if callable(getter) else None
+    if value is None:
+        getheader = getattr(response, "getheader", None)
+        value = getheader("Content-Length") if callable(getheader) else None
+    if value is None or not str(value).strip():
+        return None
+    try:
+        content_length = int(str(value).strip())
+    except ValueError as exc:
+        raise RuntimeError("HTTP response has an invalid Content-Length header.") from exc
+    if content_length < 0:
+        raise RuntimeError("HTTP response has an invalid Content-Length header.")
+    return content_length
+
+
+def read_response_bytes(response: Any, *, max_response_bytes: int | None = None) -> bytes:
+    """Read an HTTP response in bounded chunks before it reaches a JSON decoder."""
+
+    if max_response_bytes is not None:
+        if not isinstance(max_response_bytes, int) or isinstance(max_response_bytes, bool) or max_response_bytes < 0:
+            raise ValueError("max_response_bytes must be a non-negative integer or None.")
+        content_length = _response_content_length(response)
+        if content_length is not None and content_length > max_response_bytes:
+            raise RuntimeError(
+                f"HTTP response declares {content_length} bytes, exceeding the {max_response_bytes}-byte limit."
+            )
+
+    chunks: list[bytes] = []
+    total_bytes = 0
+    while True:
+        chunk = response.read(HTTP_RESPONSE_READ_CHUNK_SIZE)
+        if not chunk:
+            return b"".join(chunks)
+        payload = bytes(chunk)
+        total_bytes += len(payload)
+        if max_response_bytes is not None and total_bytes > max_response_bytes:
+            raise RuntimeError(f"HTTP response exceeds the {max_response_bytes}-byte limit.")
+        chunks.append(payload)
 
 
 def throw_if_interrupted() -> None:
@@ -124,6 +168,7 @@ def _request_bytes_once(
     body: bytes | None = None,
     headers: dict[str, str] | None = None,
     timeout_s: float = 300.0,
+    max_response_bytes: int | None = None,
     abort_handle: HttpRequestAbortHandle | None = None,
 ) -> HttpResponseBytes:
     parsed = urllib.parse.urlsplit(url)
@@ -138,7 +183,7 @@ def _request_bytes_once(
     try:
         connection.request(method.upper(), target, body=body, headers=headers or {})
         response = connection.getresponse()
-        response_body = response.read()
+        response_body = read_response_bytes(response, max_response_bytes=max_response_bytes)
         return HttpResponseBytes(
             status=int(getattr(response, "status", 0) or 0),
             reason=str(getattr(response, "reason", "") or ""),
@@ -158,6 +203,7 @@ def request_bytes(
     body: bytes | None = None,
     headers: dict[str, str] | None = None,
     timeout_s: float = 300.0,
+    max_response_bytes: int | None = None,
     description: str | None = None,
     poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
     logger: logging.Logger | None = None,
@@ -177,6 +223,7 @@ def request_bytes(
             body=body,
             headers=headers,
             timeout_s=timeout_s,
+            max_response_bytes=max_response_bytes,
             abort_handle=abort_handle,
         ),
         abort=abort_request,
@@ -193,6 +240,7 @@ def request_bytes_uninterruptible(
     body: bytes | None = None,
     headers: dict[str, str] | None = None,
     timeout_s: float = 10.0,
+    max_response_bytes: int | None = None,
 ) -> HttpResponseBytes:
     """Issue a bounded cleanup request even while ComfyUI's interrupt flag is set."""
 
@@ -202,6 +250,7 @@ def request_bytes_uninterruptible(
         body=body,
         headers=headers,
         timeout_s=timeout_s,
+        max_response_bytes=max_response_bytes,
     )
 
 
