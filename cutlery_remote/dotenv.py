@@ -48,7 +48,7 @@ def parse_dotenv_value(raw_value: str) -> str:
 def load_comfy_root_dotenv(path: str | Path | None = None) -> dict[str, str]:
     dotenv_path = Path(path) if path is not None else _comfy_root_dotenv_path()
     try:
-        lines = dotenv_path.read_text(encoding="utf-8").splitlines()
+        lines = dotenv_path.read_text(encoding="utf-8-sig").splitlines()
     except FileNotFoundError:
         return {}
     except Exception:

@@ -410,7 +410,7 @@ class CutleryRemoteClipTests(unittest.TestCase):
                     ]
                 )
                 + "\n",
-                encoding="utf-8",
+                encoding="utf-8-sig",
             )
             folder_paths = types.SimpleNamespace(base_path=temp_dir)
 
