@@ -25,6 +25,7 @@ ALLOWED_ROOT_FILES = {
     "nodes_remote_proxy.py",
     "nodes_wf3_boundary.py",
     "pyproject.toml",
+    "requirements.txt",
     "requirements-dev.txt",
 }
 ALLOWED_DIRECTORIES = {"cutlery_remote", "docs", "web"}
@@ -73,10 +74,9 @@ class ReleaseArchiveTests(unittest.TestCase):
 
     def test_public_package_has_the_contract_dependency_and_openapi_documents(self):
         pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-        self.assertIn(
-            '"cutlery-workflow-contracts @ git+https://github.com/jackspooner/cutlery-workflow-contracts.git@7b3db7218c8a781255a1dca695110f3df1e6c59f"',
-            pyproject,
-        )
+        dependency = "cutlery-workflow-contracts @ git+https://github.com/jackspooner/cutlery-workflow-contracts.git@7b3db7218c8a781255a1dca695110f3df1e6c59f"
+        self.assertIn(f'"{dependency}"', pyproject)
+        self.assertEqual((ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines(), [dependency])
         for name in ("cutlery_remote_openapi.yaml", "cutlery_remote_clip_openapi.yaml"):
             self.assertTrue((ROOT / "docs" / name).is_file())
 
