@@ -96,6 +96,18 @@ class RemoteModelNodeTests(unittest.TestCase):
                 cache_policy="unknown",
             )
 
+    def test_remote_group_preparation_uses_policy_specific_fingerprint(self):
+        module = _load_nodes_remote()
+
+        self.assertEqual(
+            module.CutleryRemoteGroupPreparation.IS_CHANGED(cache_policy=module.REMOTE_GROUP_CACHE_POLICY_SENDER_V1),
+            module.REMOTE_GROUP_PREPARATION_FINGERPRINT_VERSION,
+        )
+        self.assertNotEqual(
+            module.CutleryRemoteGroupPreparation.IS_CHANGED(cache_policy=module.REMOTE_GROUP_CACHE_POLICY_REMOTE),
+            module.CutleryRemoteGroupPreparation.IS_CHANGED(cache_policy=module.REMOTE_GROUP_CACHE_POLICY_REMOTE),
+        )
+
     def test_remote_group_executor_roles_are_registered_and_documented(self):
         module = _load_nodes_remote()
 

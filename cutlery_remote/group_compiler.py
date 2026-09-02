@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .boundary_types import SUPPORTED_BOUNDARY_PORT_TYPES, normalize_boundary_port_type
+from .cache_policy import REMOTE_GROUP_CACHE_POLICY_REMOTE, REMOTE_GROUP_CACHE_POLICY_SENDER_V1
 from .model_inputs import iter_loader_model_inputs
 from .target import remote_target_alias, remote_target_endpoint
 
@@ -16,7 +17,6 @@ MAX_PORTS = 64
 COLLAPSED_NODE_HEIGHT = 30
 GROUP_EXECUTOR_CLASS = "CutleryRemoteGroupExecutor"
 GROUP_VALUE_EXECUTOR_CLASS = "CutleryRemoteGroupValueExecutor"
-REMOTE_CACHE_POLICY = "remote"
 TARGET_RE = re.compile(r"^([A-Za-z0-9_.-]+):([1-9][0-9]{0,4})$")
 CURLY_TARGET_RE = re.compile(r"^([A-Za-z0-9_.-]+):\{([1-9][0-9]{0,4})\}$")
 CUTLERY_TARGET_RE = re.compile(r"^cutlery://([A-Za-z0-9_.-]+):([1-9][0-9]{0,4})$")
@@ -449,6 +449,36 @@ def _group_executor_class(
     return GROUP_VALUE_EXECUTOR_CLASS
 
 
+def _cache_declared_inputs_only(definition: Mapping[str, Any]) -> bool:
+    cache = definition.get("cache")
+    return isinstance(cache, Mapping) and cache.get("declared_inputs_only") is True
+
+
+def _group_cache_policy(
+    wrapper_class: str,
+    prompt: dict[str, Any],
+    remote_ids: set[str],
+    resolver: DefinitionResolver | None,
+    target: str,
+) -> str:
+    if wrapper_class != GROUP_VALUE_EXECUTOR_CLASS or resolver is None:
+        return REMOTE_GROUP_CACHE_POLICY_REMOTE
+    for node_id in sorted(remote_ids):
+        node = prompt.get(node_id)
+        if not isinstance(node, Mapping):
+            return REMOTE_GROUP_CACHE_POLICY_REMOTE
+        class_type = str(node.get("class_type") or "").strip()
+        if not class_type:
+            return REMOTE_GROUP_CACHE_POLICY_REMOTE
+        try:
+            local, remote = _definition_pair(resolver, class_type, target)
+        except ValueError:
+            return REMOTE_GROUP_CACHE_POLICY_REMOTE
+        if not (_cache_declared_inputs_only(local) and _cache_declared_inputs_only(remote)):
+            return REMOTE_GROUP_CACHE_POLICY_REMOTE
+    return REMOTE_GROUP_CACHE_POLICY_SENDER_V1
+
+
 def _validate_relocatable_recipe(
     prompt: dict[str, Any],
     node_id: str,
@@ -821,6 +851,13 @@ def _compile_group(
         definition_resolver,
         partial_execution_targets or set(),
     )
+    cache_policy = _group_cache_policy(
+        wrapper_class,
+        prompt,
+        remote_ids,
+        definition_resolver,
+        group["target"],
+    )
 
     for node_id in inside_ids:
         prompt.pop(node_id, None)
@@ -854,6 +891,7 @@ def _compile_group(
             "preparation_manifest_json": json.dumps(preparation_manifest, separators=(",", ":"), sort_keys=True),
             "preload_workflow_json": json.dumps(preload_workflow, separators=(",", ":")),
             "timeout_seconds": 300,
+            "cache_policy": cache_policy,
         },
     }
     wrapper_inputs = {
@@ -865,7 +903,7 @@ def _compile_group(
         ),
         "output_ports_json": output_inputs["ports_json"],
         "timeout_seconds": 300,
-        "cache_policy": REMOTE_CACHE_POLICY,
+        "cache_policy": cache_policy,
         "progress_map_json": json.dumps(progress_map, separators=(",", ":"), sort_keys=True),
         "model_refs_json": json.dumps(model_refs, separators=(",", ":"), sort_keys=True),
         "preparation_manifest_json": json.dumps(preparation_manifest, separators=(",", ":"), sort_keys=True),

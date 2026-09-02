@@ -136,11 +136,15 @@ and eviction policy own the loaded objects; Cutlery does not pin models or
 create another VRAM cache. Setting the variable to `0` keeps early file staging
 but defers VRAM loading until normal remote execution.
 
-Generated executors use the `remote` cache policy. Stable node ids, constants,
-links, canonical model names, and preload recipes allow the peer's normal
-ComfyUI cache to reuse loader and patcher work. Preparation still performs one
-batched availability check on a warm run, while the digest cache avoids
-rehashing unchanged files and no transfer occurs.
+Generated groups use the `sender-v1` cache policy only when every original and
+relocated node is explicitly marked `cache.declared_inputs_only: true` by both
+the local and peer node definitions. In that case unchanged inputs reuse the
+local remote-group result without dispatching another remote execution job.
+Queue-time compilation may still refresh peer node-definition metadata. Missing
+or false cache metadata, terminal groups, output-node groups, and
+partial-execution groups use the `remote` policy instead. Those groups run
+preparation on every queue, so the batched peer availability check still runs
+while the digest cache avoids rehashing unchanged files and no transfer occurs.
 
 Boundary directions are intentionally asymmetric:
 

@@ -145,6 +145,8 @@ class WF3RemoteGroupCompilerTests(unittest.TestCase):
         self.assertEqual(json.loads(wrapper["inputs"]["input_ports_json"]), [{"name": "input_1", "type": "string"}])
         self.assertEqual(json.loads(wrapper["inputs"]["output_ports_json"]), [{"name": "output_1", "type": "json"}])
         self.assertEqual(wrapper["inputs"]["value_1"], ["1", 0])
+        self.assertEqual(wrapper["inputs"]["cache_policy"], "remote")
+        self.assertEqual(prompt["cutlery_remote_prepare_1"]["inputs"]["cache_policy"], "remote")
 
         remote_prompt = json.loads(wrapper["inputs"]["remote_workflow_json"])
         self.assertEqual(remote_prompt["2"]["inputs"]["text"], ["cutlery_remote_input_1_1", 0])
@@ -154,6 +156,40 @@ class WF3RemoteGroupCompilerTests(unittest.TestCase):
         )
         self.assertEqual(prompt["cutlery_remote_decode_1_1"]["class_type"], "WF3ConditioningFromBlob")
         self.assertEqual(prompt["3"]["inputs"]["conditioning"], ["cutlery_remote_decode_1_1", 0])
+
+    def test_compiles_safe_value_group_with_sender_cache_policy(self):
+        cache = {"declared_inputs_only": True}
+        resolver = {"RemoteNode": {"local": {"cache": cache}, "remote": {"cache": cache}}}
+
+        compiled, remaps, _targets = compile_editor_remote_groups(
+            _editor_workflow(),
+            _api_prompt(),
+            definition_resolver=resolver,
+        )
+
+        wrapper = compiled[remaps["2"]]
+        self.assertEqual(wrapper["class_type"], "CutleryRemoteGroupValueExecutor")
+        self.assertEqual(wrapper["inputs"]["cache_policy"], "sender-v1")
+        self.assertEqual(compiled["cutlery_remote_prepare_1"]["inputs"]["cache_policy"], "sender-v1")
+
+    def test_compiles_value_group_with_unsafe_cache_metadata_on_remote_policy(self):
+        resolver = {
+            "RemoteNode": {
+                "local": {"cache": {"declared_inputs_only": True}},
+                "remote": {"cache": {"declared_inputs_only": False}},
+            }
+        }
+
+        compiled, remaps, _targets = compile_editor_remote_groups(
+            _editor_workflow(),
+            _api_prompt(),
+            definition_resolver=resolver,
+        )
+
+        wrapper = compiled[remaps["2"]]
+        self.assertEqual(wrapper["class_type"], "CutleryRemoteGroupValueExecutor")
+        self.assertEqual(wrapper["inputs"]["cache_policy"], "remote")
+        self.assertEqual(compiled["cutlery_remote_prepare_1"]["inputs"]["cache_policy"], "remote")
 
     def test_compiles_labelled_group_using_only_its_endpoint(self):
         workflow = _editor_workflow()
@@ -174,6 +210,7 @@ class WF3RemoteGroupCompilerTests(unittest.TestCase):
         compiled, remaps, _targets = compile_editor_remote_groups(workflow, prompt)
 
         self.assertEqual(compiled[remaps["2"]]["class_type"], "CutleryRemoteGroupExecutor")
+        self.assertEqual(compiled[remaps["2"]]["inputs"]["cache_policy"], "remote")
 
     def test_compiles_group_containing_output_node_as_terminal_executor(self):
         resolver = {
@@ -190,6 +227,7 @@ class WF3RemoteGroupCompilerTests(unittest.TestCase):
         )
 
         self.assertEqual(compiled[remaps["2"]]["class_type"], "CutleryRemoteGroupExecutor")
+        self.assertEqual(compiled[remaps["2"]]["inputs"]["cache_policy"], "remote")
 
     def test_partial_execution_target_promotes_group_to_terminal_executor(self):
         compiled, remaps, _targets = compile_editor_remote_groups(
@@ -199,6 +237,7 @@ class WF3RemoteGroupCompilerTests(unittest.TestCase):
         )
 
         self.assertEqual(compiled[remaps["2"]]["class_type"], "CutleryRemoteGroupExecutor")
+        self.assertEqual(compiled[remaps["2"]]["inputs"]["cache_policy"], "remote")
 
     def test_switch_keeps_local_false_branch_and_uses_dependency_remote_true_branch(self):
         workflow = {
@@ -384,11 +423,14 @@ class WF3RemoteGroupCompilerTests(unittest.TestCase):
             "1190:6": {"class_type": "LocalSampler", "inputs": {"model": ["1190:2", 0]}},
             "1190:7": {"class_type": "ConditioningSink", "inputs": {"conditioning": ["1190:5", 0]}},
         }
-        clip_loader = {"inputs": {"required": {}}, "outputs": [{"type": "CLIP"}]}
-        clip_join = {"inputs": {"required": {"clip": {"type": "CLIP"}}}, "outputs": [{"type": "CLIP"}]}
+        cache = {"declared_inputs_only": True}
+        clip_loader = {"inputs": {"required": {}}, "outputs": [{"type": "CLIP"}], "cache": cache}
+        clip_join = {"inputs": {"required": {"clip": {"type": "CLIP"}}}, "outputs": [{"type": "CLIP"}], "cache": cache}
+        text_encode = {"inputs": {"required": {"clip": {"type": "CLIP"}}}, "outputs": [{"type": "CONDITIONING"}], "cache": cache}
         resolver = {
             "CLIPLoader": {"local": clip_loader, "remote": clip_loader},
             "CutleryJoinClip": {"local": clip_join, "remote": clip_join},
+            "TextEncode": {"local": text_encode, "remote": text_encode},
         }
 
         compiled, remaps, targets = compile_editor_remote_groups(workflow, prompt, definition_resolver=resolver)
@@ -402,6 +444,7 @@ class WF3RemoteGroupCompilerTests(unittest.TestCase):
         self.assertIn("1190:1", compiled)
         self.assertIn("1190:2", compiled)
         self.assertEqual(compiled["1190:6"]["inputs"]["model"], ["1190:2", 0])
+        self.assertEqual(wrapper["inputs"]["cache_policy"], "sender-v1")
 
     def test_recursive_definition_guard_stops_self_reference(self):
         workflow, api_prompt, remote_ids, _ = _nested_workflow()
