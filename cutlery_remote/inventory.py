@@ -127,7 +127,11 @@ def _safe_names(values: Any) -> list[str]:
 def list_model_names(model_type: object) -> list[str]:
     folder_key = normalize_model_type(model_type)
     folder_paths = _folder_paths_module()
-    return _safe_names(folder_paths.get_filename_list(folder_key))
+    try:
+        names = folder_paths.get_filename_list(folder_key)
+    except KeyError:
+        return []
+    return _safe_names(names)
 
 
 def _model_filename(value: object) -> str:

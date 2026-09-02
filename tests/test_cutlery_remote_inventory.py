@@ -12,6 +12,20 @@ if str(REPO_ROOT) not in sys.path:
 
 
 class RemoteInventoryTests(unittest.TestCase):
+    def test_unregistered_canonical_model_category_is_unavailable(self):
+        folder_paths = types.SimpleNamespace(
+            get_filename_list=mock.Mock(side_effect=KeyError("wav2vec2")),
+        )
+
+        with mock.patch.dict(sys.modules, {"folder_paths": folder_paths}):
+            from cutlery_remote.inventory import list_model_names, resolve_model_name
+
+            names = list_model_names("wav2vec2")
+            resolved = resolve_model_name("wav2vec2", "wav2vec.safetensors")
+
+        self.assertEqual(names, [])
+        self.assertFalse(resolved["ok"])
+
     def test_inventory_excludes_incomplete_model_transfer_staging_files(self):
         folder_paths = types.SimpleNamespace(
             get_filename_list=lambda key: {
