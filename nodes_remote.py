@@ -38,6 +38,11 @@ from .cutlery_remote.boundary_types import (
     REMOTE_OUTBOUND_DISALLOWED_TYPES,
     SUPPORTED_BOUNDARY_PORT_TYPES as REMOTE_BOUNDARY_PORT_TYPES,
 )
+from .cutlery_remote.cache_policy import (
+    REMOTE_GROUP_CACHE_POLICY_REMOTE,
+    REMOTE_GROUP_CACHE_POLICY_SENDER_V1,
+    REMOTE_GROUP_PREPARATION_FINGERPRINT_VERSION,
+)
 from .cutlery_remote.capabilities import (
     REMOTE_MODEL_PRELOAD_FEATURE,
     REMOTE_PROGRESS_FEATURE,
@@ -90,8 +95,6 @@ except Exception:
 LOGGER = logging.getLogger("cutlery.remote.routes")
 CATEGORY = "Cutlery/Remote"
 MAX_REMOTE_GROUP_PORTS = 64
-REMOTE_GROUP_CACHE_POLICY_REMOTE = "remote"
-REMOTE_GROUP_CACHE_POLICY_SENDER_V1 = "sender-v1"
 REMOTE_EARLY_MODEL_PRELOAD_ENV = "CUTLERY_REMOTE_EARLY_MODEL_PRELOAD_ENABLED"
 REMOTE_EARLY_MODEL_PRELOAD_ENABLED = strict_bool(REMOTE_EARLY_MODEL_PRELOAD_ENV, True)
 REMOTE_RESPONSE_LIMIT_MB_ENV = "CUTLERY_REMOTE_RESPONSE_LIMIT_MB"
@@ -2599,7 +2602,13 @@ class CutleryRemoteGroupPreparation:
                 "preparation_manifest_json": ("STRING", {"default": "{}", "multiline": True}),
                 "preload_workflow_json": ("STRING", {"default": "{}", "multiline": True}),
                 "timeout_seconds": ("FLOAT", {"default": 300.0, "min": 0.1, "max": 86400.0}),
-            }
+            },
+            "optional": {
+                "cache_policy": (
+                    [REMOTE_GROUP_CACHE_POLICY_REMOTE, REMOTE_GROUP_CACHE_POLICY_SENDER_V1],
+                    {"default": REMOTE_GROUP_CACHE_POLICY_REMOTE, "tooltip": "Controls whether this generated preparation can reuse a prior local result."},
+                ),
+            },
         }
 
     RETURN_TYPES = ("CUTLERY_REMOTE_PREPARATION",)
@@ -2608,7 +2617,9 @@ class CutleryRemoteGroupPreparation:
     DESCRIPTION = "Generated asynchronous preparation that stages and optionally preloads peer models."
 
     @classmethod
-    def IS_CHANGED(cls, **_kwargs):
+    def IS_CHANGED(cls, cache_policy: str = REMOTE_GROUP_CACHE_POLICY_REMOTE, **_kwargs):
+        if cache_policy == REMOTE_GROUP_CACHE_POLICY_SENDER_V1:
+            return REMOTE_GROUP_PREPARATION_FINGERPRINT_VERSION
         return float("nan")
 
     async def prepare(
@@ -2619,7 +2630,10 @@ class CutleryRemoteGroupPreparation:
         preparation_manifest_json: str,
         preload_workflow_json: str,
         timeout_seconds: float = 300.0,
+        cache_policy: str = REMOTE_GROUP_CACHE_POLICY_REMOTE,
     ):
+        if cache_policy not in {REMOTE_GROUP_CACHE_POLICY_REMOTE, REMOTE_GROUP_CACHE_POLICY_SENDER_V1}:
+            raise ValueError(f"Unsupported remote group cache_policy {cache_policy!r}.")
         base_url = _clean_base_url(remote_base_url)
         if not base_url:
             raise ValueError("Cutlery remote preparation needs a valid remote_base_url.")

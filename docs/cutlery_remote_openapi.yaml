@@ -506,7 +506,10 @@ paths:
         `CutleryRemoteGroupExecutor` when they have no outbound values or contain an
         original output node confirmed by local and peer definitions. A group selected
         through `partial_execution_targets` also retains the terminal wrapper so its
-        remapped target remains valid for ComfyUI partial execution.
+        remapped target remains valid for ComfyUI partial execution. Dependency groups
+        use sender-side caching only when every original and relocated node has local
+        and peer `cache.declared_inputs_only: true`; all other groups keep peer-side
+        cache evaluation and per-queue preparation.
       requestBody:
         required: true
         content:
