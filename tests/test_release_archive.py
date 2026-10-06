@@ -33,7 +33,7 @@ ALLOWED_DIRECTORIES = {"cutlery_remote", "docs", "web"}
 
 def registry_paths() -> set[str]:
     ignored_prefixes = {".github/", "tests/", ".git/", "build/", "dist/", "wheelhouse/", "__pycache__/"}
-    ignored_names = {"PROJECT_TRACKER.md"}
+    ignored_names = {".git", "PROJECT_TRACKER.md"}
     paths = set()
     for path in ROOT.rglob("*"):
         if not path.is_file():
@@ -72,11 +72,18 @@ class ReleaseArchiveTests(unittest.TestCase):
         self.assertEqual(sorted(Path(path).name for path in archive if Path(path).name in forbidden_names), [])
         self.assertEqual(sorted(path for path in archive if Path(path).suffix in {".pem", ".key", ".p12", ".pfx"}), [])
 
-    def test_public_package_has_the_contract_dependency_and_openapi_documents(self):
+    def test_public_package_is_self_contained_and_includes_openapi_documents(self):
         pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-        dependency = "cutlery-workflow-contracts @ git+https://github.com/jackspooner/cutlery-workflow-contracts.git@7b3db7218c8a781255a1dca695110f3df1e6c59f"
-        self.assertIn(f'"{dependency}"', pyproject)
-        self.assertEqual((ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines(), [dependency])
+        self.assertIn("dependencies = []", pyproject)
+        self.assertNotIn("cutlery-workflow-contracts", pyproject)
+        self.assertNotIn("cutlery-workflow-contracts", (ROOT / "requirements.txt").read_text(encoding="utf-8"))
+        for path in (
+            "cutlery_remote/boundary_types.py",
+            "cutlery_remote/capabilities.py",
+            "cutlery_remote/serialization.py",
+            "cutlery_lora_chain.py",
+        ):
+            self.assertTrue((ROOT / path).is_file())
         for name in ("cutlery_remote_openapi.yaml", "cutlery_remote_clip_openapi.yaml"):
             self.assertTrue((ROOT / "docs" / name).is_file())
 

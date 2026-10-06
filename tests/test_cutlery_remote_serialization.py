@@ -1,7 +1,9 @@
+import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import torch
 
@@ -15,6 +17,65 @@ from cutlery_remote.serialization import decode_value, decode_value_bundle, enco
 
 
 class RemoteSerializationTests(unittest.TestCase):
+    def test_contracts_work_when_external_package_imports_are_blocked(self):
+        check = """
+import importlib.abc
+import sys
+
+class BlockContracts(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == "cutlery_workflow_contracts" or fullname.startswith("cutlery_workflow_contracts."):
+            raise AssertionError("external contracts package was imported")
+
+sys.meta_path.insert(0, BlockContracts())
+from cutlery_lora_chain import clone_lora_chain
+from cutlery_remote.boundary_types import normalize_boundary_port_type
+from cutlery_remote.capabilities import build_capabilities_payload
+from cutlery_remote.serialization import decode_value_bundle, encode_value_bundle
+
+assert normalize_boundary_port_type("integer") == "int"
+assert build_capabilities_payload()["protocol_version"] == 1
+assert decode_value_bundle(encode_value_bundle({"ok": True})) == {"ok": True}
+assert clone_lora_chain({"loras": [{"lora_name": "test.safetensors"}]})["loras"]
+"""
+        subprocess.run([sys.executable, "-c", check], cwd=REPO_ROOT, check=True, capture_output=True, text=True)
+
+    def test_v1_value_bundle_fixture_is_stable(self):
+        blob_hash = "857445f438d50cff79fbd7b68e45bc13d4cb9fec0f14253671ed024c9af243f3"
+        payload = b"cutlery-contract-fixture\x00"
+        bundle = {
+            "schema": "cutlery.remote.value_bundle.v1",
+            "manifest": {
+                "schema": "cutlery.remote.value.v1",
+                "kind": "bytes",
+                "blob": {"hash": blob_hash, "size": 25},
+            },
+            "blobs": {blob_hash: "Y3V0bGVyeS1jb250cmFjdC1maXh0dXJlAA=="},
+        }
+
+        self.assertEqual(decode_value_bundle(bundle, max_blob_bytes=25), payload)
+        self.assertEqual(encode_value_bundle(payload), bundle)
+
+    def test_bundle_rejects_oversized_blob_before_base64_decode(self):
+        bundle = encode_value_bundle(b"abcde")
+        with patch("cutlery_remote.serialization.base64.b64decode") as decode:
+            with self.assertRaisesRegex(ValueError, "configured limit"):
+                decode_value_bundle(bundle, max_blob_bytes=4)
+        decode.assert_not_called()
+
+    def test_bundle_rejects_corrupt_blob_and_invalid_base64(self):
+        bundle = encode_value_bundle(b"abc")
+        blob_hash = next(iter(bundle["blobs"]))
+        bundle["blobs"][blob_hash] = "YWJjZA=="
+        with self.assertRaisesRegex(ValueError, "content-addressed descriptor"):
+            decode_value_bundle(bundle)
+
+        bundle = encode_value_bundle(b"abc")
+        blob_hash = next(iter(bundle["blobs"]))
+        bundle["blobs"][blob_hash] = "%%%="
+        with self.assertRaisesRegex(ValueError, "invalid base64"):
+            decode_value_bundle(bundle)
+
     def test_blob_store_writes_content_addressed_bytes_once(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             store = BlobStore(Path(temp_dir))
