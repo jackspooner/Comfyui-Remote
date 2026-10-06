@@ -4,17 +4,11 @@ Standalone ComfyUI nodes for trusted, peer-to-peer remote execution. It includes
 
 ## Installation
 
-Install this repository into `ComfyUI/custom_nodes/Cutlery-Remote`, activate the ComfyUI virtual environment, and install its dependency from the custom-node directory:
-
-```shell
-python -m pip install -r requirements.txt
-```
-
-The requirements file installs `cutlery-workflow-contracts` from the immutable GitHub commit for v0.1.0. Restart ComfyUI after installation. Cutlery Remote does not require the broader Cutlery Nodes package.
+Install this repository into `ComfyUI/custom_nodes/Cutlery-Remote`. The protocol contracts are included in this package, so no additional Python dependency is required. Restart ComfyUI after installation. Cutlery Remote does not require the broader Cutlery Nodes package.
 
 ## Quick setup
 
-1. Install Cutlery Remote on each peer and use compatible `cutlery-workflow-contracts` versions.
+1. Install the same compatible Cutlery Remote release on each peer.
 2. Set `CUTLERY_REMOTE_SERVER_ENABLED=1` only on a peer that accepts generic Remote work. Set `CUTLERY_REMOTE_CLIP_SERVER_ENABLED=1` only on a peer that accepts Remote CLIP work.
 3. Configure the same bearer token on both peers and put exact trusted target origins in `CUTLERY_DATA_DIR/config.json`.
 4. Use HTTPS outside a private, controlled network.
