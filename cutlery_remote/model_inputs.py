@@ -1,12 +1,26 @@
 from __future__ import annotations
 
+import json
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
+import re
 from typing import Any
 
 
 ModelTypeValue = str | tuple[str, ...]
+
+LOGGER = logging.getLogger("cutlery.remote.model_inputs")
+
+MANIFEST_FILENAME = "cutlery_model_inputs.json"
+MANIFEST_VERSION = 1
+MANIFEST_KEYS = frozenset({"version", "inputs", "peer_managed"})
+RULE_KEYS = frozenset({"by_extension", "default"})
+_CATEGORY_RE = re.compile(r"^[a-z0-9_]+$")
+
+# <comfy_root>/custom_nodes/Cutlery-Remote/cutlery_remote/model_inputs.py
+CUSTOM_NODES_ROOT = Path(__file__).resolve().parents[2]
 
 
 @dataclass(frozen=True)
@@ -218,6 +232,196 @@ LOADER_MODEL_INPUTS: dict[str, dict[str, ModelInputRule]] = {
 }
 
 
+@dataclass(frozen=True)
+class ModelInputManifest:
+    """Model inputs declared by packages that ship their own loaders."""
+
+    inputs: dict[str, dict[str, ModelInputRule]]
+    peer_managed: frozenset[str]
+    sources: tuple[str, ...]
+
+
+def _valid_category(value: object) -> str | None:
+    text = str(value or "").strip()
+    return text if _CATEGORY_RE.match(text) else None
+
+
+def _manifest_rule(spec: object) -> ModelInputRule | None:
+    category = _valid_category(spec)
+    if category is not None:
+        return category
+    if isinstance(spec, list):
+        categories = [_valid_category(entry) for entry in spec]
+        if not categories or any(entry is None for entry in categories):
+            return None
+        return ModelTypeSpec(primary=categories[0], alternates=tuple(categories[1:]))
+    if not isinstance(spec, dict):
+        return None
+    if set(spec) - RULE_KEYS:
+        return None
+    default = _valid_category(spec.get("default"))
+    by_extension = spec.get("by_extension")
+    if default is None or not isinstance(by_extension, dict) or not by_extension:
+        return None
+    suffixes: dict[str, str] = {}
+    for suffix, target in by_extension.items():
+        suffix_text = str(suffix).strip().lower()
+        target_category = _valid_category(target)
+        if not suffix_text.startswith(".") or target_category is None:
+            return None
+        suffixes[suffix_text] = target_category
+
+    def rule(value: str) -> str:
+        lower = value.lower()
+        for suffix, target_category in suffixes.items():
+            if lower.endswith(suffix):
+                return target_category
+        return default
+
+    return rule
+
+
+def _parse_manifest(path: Path) -> tuple[dict[str, dict[str, ModelInputRule]], frozenset[str]] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        LOGGER.warning("[Cutlery Remote] Ignoring model input manifest %s: %s", path, error)
+        return None
+    if not isinstance(payload, dict):
+        LOGGER.warning("[Cutlery Remote] Ignoring model input manifest %s: expected a JSON object.", path)
+        return None
+    if payload.get("version") != MANIFEST_VERSION:
+        LOGGER.warning(
+            "[Cutlery Remote] Ignoring model input manifest %s: unsupported version %r.",
+            path,
+            payload.get("version"),
+        )
+        return None
+    unknown = sorted(set(payload) - MANIFEST_KEYS)
+    if unknown:
+        LOGGER.warning(
+            "[Cutlery Remote] Ignoring model input manifest %s: unsupported keys %s.",
+            path,
+            ", ".join(unknown),
+        )
+        return None
+    raw_inputs = payload.get("inputs", {})
+    raw_peer_managed = payload.get("peer_managed", [])
+    if not isinstance(raw_inputs, dict) or not isinstance(raw_peer_managed, list):
+        LOGGER.warning("[Cutlery Remote] Ignoring model input manifest %s: malformed sections.", path)
+        return None
+
+    inputs: dict[str, dict[str, ModelInputRule]] = {}
+    for class_type, raw_map in raw_inputs.items():
+        class_name = str(class_type or "").strip()
+        if not class_name or not isinstance(raw_map, dict):
+            LOGGER.warning("[Cutlery Remote] Ignoring %s entry in %s: malformed.", class_type, path)
+            continue
+        resolved: dict[str, ModelInputRule] = {}
+        for input_name, rule_spec in raw_map.items():
+            name = str(input_name or "").strip()
+            rule = _manifest_rule(rule_spec)
+            if not name or rule is None:
+                LOGGER.warning(
+                    "[Cutlery Remote] Ignoring %s.%s in %s: unsupported model input rule.",
+                    class_name,
+                    input_name,
+                    path,
+                )
+                continue
+            resolved[name] = rule
+        if resolved:
+            inputs[class_name] = resolved
+
+    peer_managed = frozenset(
+        str(name).strip() for name in raw_peer_managed if str(name or "").strip()
+    )
+    return inputs, peer_managed
+
+
+def _load_manifests(root: Path | None = None) -> ModelInputManifest:
+    search_root = Path(root) if root is not None else CUSTOM_NODES_ROOT
+    inputs: dict[str, dict[str, ModelInputRule]] = {}
+    peer_managed: set[str] = set()
+    sources: list[str] = []
+    try:
+        candidates = sorted(search_root.glob(f"*/{MANIFEST_FILENAME}"))
+    except OSError:
+        candidates = []
+    for path in candidates:
+        parsed = _parse_manifest(path)
+        if parsed is None:
+            continue
+        package_inputs, package_peer_managed = parsed
+        for class_type, mapping in package_inputs.items():
+            inputs.setdefault(class_type, {}).update(mapping)
+        peer_managed.update(package_peer_managed)
+        sources.append(path.parent.name)
+    if sources:
+        LOGGER.info(
+            "[Cutlery Remote] Loaded model input manifests from %s (%s classes, %s peer-managed).",
+            ", ".join(sources),
+            len(inputs),
+            len(peer_managed),
+        )
+    return ModelInputManifest(
+        inputs=inputs,
+        peer_managed=frozenset(peer_managed),
+        sources=tuple(sources),
+    )
+
+
+_manifest_cache: ModelInputManifest | None = None
+_merged_cache: dict[str, dict[str, ModelInputRule]] | None = None
+
+
+def reset_manifest_cache() -> None:
+    """Drop the cached manifests so the next call re-reads the filesystem."""
+
+    global _manifest_cache, _merged_cache
+    _manifest_cache = None
+    _merged_cache = None
+
+
+def model_input_manifest() -> ModelInputManifest:
+    global _manifest_cache
+    if _manifest_cache is None:
+        _manifest_cache = _load_manifests()
+    return _manifest_cache
+
+
+def loader_model_inputs() -> dict[str, dict[str, ModelInputRule]]:
+    """Return the built-in loader table merged with package manifests."""
+
+    global _merged_cache
+    if _merged_cache is None:
+        merged = {class_type: dict(mapping) for class_type, mapping in LOADER_MODEL_INPUTS.items()}
+        for class_type, mapping in model_input_manifest().inputs.items():
+            merged.setdefault(class_type, {}).update(mapping)
+        _merged_cache = merged
+    return _merged_cache
+
+
+def peer_managed_class_types() -> frozenset[str]:
+    return model_input_manifest().peer_managed
+
+
+def iter_peer_managed_nodes(workflow: Any):
+    """Yield node ids whose loader copies models through its own path settings."""
+
+    if not isinstance(workflow, dict):
+        return
+    peer_managed = peer_managed_class_types()
+    if not peer_managed:
+        return
+    for node_id, node in workflow.items():
+        if not isinstance(node, dict):
+            continue
+        class_type = str(node.get("class_type") or "").strip()
+        if class_type in peer_managed:
+            yield str(node_id), class_type
+
+
 def _resolve_model_type(rule: ModelInputRule, value: str) -> ModelTypeSpec | None:
     resolved = rule(value) if callable(rule) else rule
     if resolved is None:
@@ -230,11 +434,12 @@ def _resolve_model_type(rule: ModelInputRule, value: str) -> ModelTypeSpec | Non
 def iter_loader_model_inputs(workflow: Any):
     if not isinstance(workflow, dict):
         return
+    loaders = loader_model_inputs()
     for node_id, node in workflow.items():
         if not isinstance(node, dict):
             continue
         class_type = str(node.get("class_type") or "").strip()
-        input_map = LOADER_MODEL_INPUTS.get(class_type)
+        input_map = loaders.get(class_type)
         if not input_map:
             continue
         inputs = node.get("inputs")
