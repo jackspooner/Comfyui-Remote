@@ -67,6 +67,20 @@ class RemoteModelTransferTests(unittest.TestCase):
         self.assertIn("<encoded PowerShell omitted>", command)
         self.assertNotIn("very-long-payload", command)
 
+    def test_command_log_omits_multi_line_posix_script(self):
+        from cutlery_remote import model_transfer
+
+        script = model_transfer._posix_verify_and_promote_command(
+            "/home/jack/models/vae/.cutlery-upload-x.part",
+            "/home/jack/models/vae/vae.safetensors",
+            expected_size=3,
+            expected_sha256=hashlib.sha256(b"vae").hexdigest(),
+        )
+        formatted = model_transfer._format_command(["ssh", "secondpc", script])
+
+        self.assertIn("<multi-line peer script omitted>", formatted)
+        self.assertNotIn("sha256_of", formatted)
+
     def test_copy_model_file_uses_configured_ssh_mkdir_and_scp_folder_format(self):
         from cutlery_remote import model_transfer
 
@@ -95,6 +109,10 @@ class RemoteModelTransferTests(unittest.TestCase):
                 model_transfer,
                 "_new_staging_filename",
                 return_value=".cutlery-upload-fixed.part",
+            ), mock.patch.object(
+                model_transfer,
+                "remote_shell_kind",
+                return_value="windows",
             ):
                 result = model_transfer.copy_model_file_to_remote(source, "vae", "sdxl/vae.safetensors")
 
@@ -145,6 +163,10 @@ class RemoteModelTransferTests(unittest.TestCase):
                 model_transfer,
                 "_new_staging_filename",
                 return_value=".cutlery-upload-target.part",
+            ), mock.patch.object(
+                model_transfer,
+                "remote_shell_kind",
+                return_value="windows",
             ):
                 result = model_transfer.copy_model_file_to_remote(
                     source,
@@ -193,6 +215,10 @@ class RemoteModelTransferTests(unittest.TestCase):
                 return_value=".cutlery-upload-failed.part",
             ), mock.patch.object(
                 model_transfer,
+                "remote_shell_kind",
+                return_value="windows",
+            ), mock.patch.object(
+                model_transfer,
                 "_remove_remote_staging_best_effort",
             ) as cleanup:
                 with self.assertRaisesRegex(RuntimeError, "hash mismatch"):
@@ -207,6 +233,7 @@ class RemoteModelTransferTests(unittest.TestCase):
         cleanup.assert_called_once_with(
             "renderhost",
             "D:/ComfyUI/models/checkpoints/.cutlery-upload-failed.part",
+            "windows",
         )
         verification_command = self._decode_powershell_command(calls[2][2])
         self.assertIn("[System.IO.File]::Move($stage, $final)", verification_command)
@@ -243,6 +270,10 @@ class RemoteModelTransferTests(unittest.TestCase):
                 return_value=".cutlery-upload-cancelled.part",
             ), mock.patch.object(
                 model_transfer,
+                "remote_shell_kind",
+                return_value="windows",
+            ), mock.patch.object(
+                model_transfer,
                 "_remove_remote_staging_best_effort",
             ) as cleanup:
                 with self.assertRaises(Cancelled):
@@ -257,6 +288,7 @@ class RemoteModelTransferTests(unittest.TestCase):
         cleanup.assert_called_once_with(
             "renderhost",
             "D:/ComfyUI/models/checkpoints/.cutlery-upload-cancelled.part",
+            "windows",
         )
         self.assertEqual(len(calls), 2)
 
@@ -283,6 +315,10 @@ class RemoteModelTransferTests(unittest.TestCase):
                 model_transfer,
                 "_new_staging_filename",
                 return_value=".cutlery-upload-cleanup-failure.part",
+            ), mock.patch.object(
+                model_transfer,
+                "remote_shell_kind",
+                return_value="windows",
             ), mock.patch.object(
                 model_transfer,
                 "_run_uninterruptible_cleanup_command",
@@ -312,6 +348,145 @@ class RemoteModelTransferTests(unittest.TestCase):
         self.assertNotEqual(first, second)
         self.assertTrue(is_model_transfer_staging_name(first))
         self.assertTrue(is_model_transfer_staging_name(f"subdir/{second}"))
+
+    def test_remote_shell_kind_detects_posix_peers(self):
+        from cutlery_remote import model_transfer
+
+        for system in ("Linux\n", "Darwin\n", "FreeBSD\n"):
+            with mock.patch.object(
+                model_transfer.subprocess,
+                "run",
+                return_value=mock.Mock(returncode=0, stdout=system),
+            ):
+                self.assertEqual(model_transfer.remote_shell_kind("peer"), "posix")
+
+    def test_remote_shell_kind_treats_git_bash_and_failures_as_windows(self):
+        from cutlery_remote import model_transfer
+
+        for completed in (
+            mock.Mock(returncode=0, stdout="MINGW64_NT-10.0-19045\n"),
+            mock.Mock(returncode=1, stdout="'uname' is not recognized"),
+        ):
+            with mock.patch.object(model_transfer.subprocess, "run", return_value=completed):
+                self.assertEqual(model_transfer.remote_shell_kind("peer"), "windows")
+
+    def test_copy_model_file_uses_posix_commands_for_linux_peers(self):
+        from cutlery_remote import model_transfer
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "clip.safetensors"
+            source.write_bytes(b"clip")
+            calls = []
+
+            with mock.patch.object(
+                model_transfer,
+                "_run_interruptible_command",
+                side_effect=lambda command, **_kwargs: calls.append(list(command)) or "",
+            ), mock.patch.object(
+                model_transfer,
+                "_new_staging_filename",
+                return_value=".cutlery-upload-posix.part",
+            ), mock.patch.object(
+                model_transfer,
+                "remote_shell_kind",
+                return_value="posix",
+            ):
+                result = model_transfer.copy_model_file_to_remote(
+                    source,
+                    "text_encoders",
+                    "soulx_singer/clip.safetensors",
+                    remote_host="secondpc",
+                    remote_root="/home/jack/models",
+                )
+
+        self.assertEqual(
+            calls[0],
+            ["ssh", "secondpc", "mkdir -p -- /home/jack/models/text_encoders/soulx_singer"],
+        )
+        self.assertEqual(
+            calls[1],
+            [
+                "scp",
+                str(source),
+                "secondpc:/home/jack/models/text_encoders/soulx_singer/.cutlery-upload-posix.part",
+            ],
+        )
+        self.assertEqual(calls[2][0:2], ["ssh", "secondpc"])
+        script = calls[2][2]
+        self.assertIn("sha256sum", script)
+        self.assertIn('mv -- "$stage" "$final"', script)
+        self.assertIn('wc -c < "$stage"', script)
+        self.assertIn("/home/jack/models/text_encoders/soulx_singer/clip.safetensors", script)
+        self.assertNotIn("Get-FileHash", script)
+        self.assertNotIn("powershell", script)
+        self.assertNotIn("\\", script)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["remote_folder"], "/home/jack/models/text_encoders/soulx_singer")
+        self.assertEqual(result["sha256"], hashlib.sha256(b"clip").hexdigest())
+
+    def test_posix_commands_quote_paths_with_spaces_and_quotes(self):
+        from cutlery_remote import model_transfer
+
+        folder = "/home/jack/models/vae/my model's dir"
+        mkdir = model_transfer._posix_mkdir_command(folder)
+        cleanup = model_transfer._posix_remove_staging_command(f"{folder}/.cutlery-upload-x.part")
+        script = model_transfer._posix_verify_and_promote_command(
+            f"{folder}/.cutlery-upload-x.part",
+            f"{folder}/vae's file.safetensors",
+            expected_size=7,
+            expected_sha256="ab" * 32,
+        )
+
+        self.assertTrue(mkdir.startswith("mkdir -p -- "))
+        self.assertIn("'", mkdir)
+        self.assertTrue(cleanup.startswith("rm -f -- "))
+        self.assertIn("'", cleanup)
+        self.assertIn("'\"'\"'", script)
+        self.assertIn("expected_size=7", script)
+        self.assertIn(f"expected_hash={'ab' * 32}", script)
+
+    def test_copy_failure_cleans_up_with_posix_command(self):
+        from cutlery_remote import model_transfer
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "model.safetensors"
+            source.write_bytes(b"model")
+
+            def fake_run(command, **_kwargs):
+                if command[0] == "scp":
+                    raise RuntimeError("scp: No space left on device")
+                return ""
+
+            with mock.patch.object(
+                model_transfer,
+                "_run_interruptible_command",
+                side_effect=fake_run,
+            ), mock.patch.object(
+                model_transfer,
+                "_new_staging_filename",
+                return_value=".cutlery-upload-nospace.part",
+            ), mock.patch.object(
+                model_transfer,
+                "remote_shell_kind",
+                return_value="posix",
+            ), mock.patch.object(
+                model_transfer,
+                "_remove_remote_staging_best_effort",
+            ) as cleanup:
+                with self.assertRaisesRegex(RuntimeError, "No space left on device"):
+                    model_transfer.copy_model_file_to_remote(
+                        source,
+                        "checkpoints",
+                        "model.safetensors",
+                        remote_host="secondpc",
+                        remote_root="/home/jack/models",
+                    )
+
+        cleanup.assert_called_once_with(
+            "secondpc",
+            "/home/jack/models/checkpoints/.cutlery-upload-nospace.part",
+            "posix",
+        )
 
 
 if __name__ == "__main__":
