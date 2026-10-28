@@ -57,7 +57,7 @@ from .cutlery_remote.inventory import CANONICAL_MODEL_TYPES, find_local_model_by
 from .cutlery_remote.local_worker import lease_remote_target
 from .cutlery_remote.group_compiler import compile_editor_remote_groups_detailed, editor_remote_group_targets
 from .cutlery_remote.lora_materialization import materialize_remote_lora_file
-from .cutlery_remote.model_inputs import iter_loader_model_inputs
+from .cutlery_remote.model_inputs import iter_loader_model_inputs, iter_peer_managed_nodes
 from .cutlery_remote.model_preparation import (
     LocalModelDigestCache,
     ModelTransferCoordinator,
@@ -849,6 +849,14 @@ def _ensure_remote_workflow_models(base_url: str, workflow: Any, *, token: str |
         resolved_type, resolved_name = ensure(node_id, model_type, selected_name)
         inputs["model_type"] = resolved_type
         inputs["model_name"] = resolved_name
+
+    peer_managed = list(iter_peer_managed_nodes(workflow))
+    if peer_managed:
+        LOGGER.warning(
+            "[Cutlery Remote] Workflow uses peer-managed model loaders: %s. "
+            "Their model files are not copied; the remote peer must already have them.",
+            ", ".join(f"{class_type} ({node_id})" for node_id, class_type in peer_managed),
+        )
 
     for ref in iter_loader_model_inputs(workflow):
         node = workflow.get(ref.node_id) if isinstance(workflow, dict) else None

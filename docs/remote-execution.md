@@ -70,6 +70,28 @@ Generic model copying is optional and is not an HTTP upload. When a compiled gro
 
 LoRAs entering a compiled group through a `CUTLERY_LORA_CHAIN` boundary use the same authenticated, streamed, hash-verified transfer endpoint as Remote CLIP. The peer stores each LoRA at the same relative path and filename under its main `models/loras/` directory. Later executions look up that exact path and skip the upload when it exists. If the path already contains different bytes, the transfer fails instead of overwriting the model.
 
+### Declaring loaders for model copy
+
+Cutlery Remote ships a built-in table of ComfyUI loader classes. A custom-node package extends that table without editing Cutlery Remote by placing a `cutlery_model_inputs.json` at its package root:
+
+```json
+{
+  "version": 1,
+  "inputs": {
+    "MyLoraLoader": { "lora_name": "loras" },
+    "MyTextEncoderLoader": { "clip_name": { "by_extension": { ".gguf": "clip_gguf" }, "default": "text_encoders" } },
+    "MyMultiFolderLoader": { "ckpt_name": ["checkpoints", "text_encoders"] }
+  },
+  "peer_managed": ["MyPathLoader"]
+}
+```
+
+- `inputs` maps a node class to its model inputs. A category name resolves that input against the named ComfyUI model folder. A list gives the primary category followed by fallbacks, for loaders that accept files from several folders. The object form picks the category from the filename suffix and falls back to `default`.
+- `peer_managed` lists loaders whose models are not single files inside a ComfyUI model folder: absolute paths, Hugging Face directories, or self-managing download caches. Their files are never copied; when a remote group uses one, Cutlery Remote logs which nodes the peer must already satisfy.
+- Manifests are discovered from sibling packages under `custom_nodes/` on first use, so load order and cross-package imports do not matter. A package whose manifest fails to load logs one warning and is skipped, and a malformed entry is dropped without discarding the rest of the file.
+- `version` must currently be `1`; an unknown top-level key invalidates the manifest rather than being ignored.
+- Packages that ship a manifest also assert their declared classes still exist, so renaming a node fails that package's own tests instead of silently dropping copy coverage.
+
 ## Generic Remote route roles
 
 The inbound role controlled by `CUTLERY_REMOTE_SERVER_ENABLED` covers:

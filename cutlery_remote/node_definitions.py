@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 from enum import Enum
 from typing import Any
 
-from .model_inputs import LOADER_MODEL_INPUTS
+from .model_inputs import loader_model_inputs
 
 
 DEFAULT_MAX_CLASS_TYPES = 128
@@ -310,7 +310,7 @@ def _normalize_input(
     input_name: str,
     max_options_per_input: int,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
-    materializable = input_name in LOADER_MODEL_INPUTS.get(class_type, {})
+    materializable = input_name in loader_model_inputs().get(class_type, {})
     browser_registry = BROWSER_OWNED_INPUT_REGISTRIES.get(class_type, {}).get(input_name)
     if browser_registry is not None:
         if isinstance(raw_spec, (list, tuple)) and raw_spec:
