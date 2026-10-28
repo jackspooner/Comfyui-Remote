@@ -5,6 +5,7 @@ import hashlib
 import logging
 from pathlib import Path
 import posixpath
+import shlex
 import subprocess
 import time
 from typing import Any, Callable, Sequence
@@ -26,6 +27,10 @@ DEFAULT_REMOTE_MODEL_COPY_HOST = ""
 DEFAULT_REMOTE_MODEL_COPY_ROOT = ""
 MODEL_HASH_CHUNK_SIZE = 8 * 1024 * 1024
 REMOTE_CLEANUP_TIMEOUT_SECONDS = 30.0
+REMOTE_PROBE_TIMEOUT_SECONDS = 30.0
+POSIX_PEER = "posix"
+WINDOWS_PEER = "windows"
+POSIX_UNAME_SYSTEMS = frozenset({"linux", "darwin", "freebsd", "openbsd", "netbsd", "sunos"})
 
 REMOTE_COPY_FOLDER_KEYS = {
     "clip_gguf": "text_encoders",
@@ -100,6 +105,9 @@ def _format_command(command: Sequence[str]) -> str:
     for index, part in enumerate(formatted[:-1]):
         if part.casefold() == "-encodedcommand":
             formatted[index + 1] = "<encoded PowerShell omitted>"
+    formatted = [
+        "<multi-line peer script omitted>" if "\n" in part else part for part in formatted
+    ]
     return subprocess.list2cmdline(formatted)
 
 
@@ -281,6 +289,81 @@ def _remote_remove_staging_command(staging_path: str) -> str:
     return _powershell_command(script)
 
 
+def remote_shell_kind(host: str) -> str:
+    """Return whether the SSH peer runs a POSIX shell or Windows cmd/PowerShell."""
+
+    completed = subprocess.run(
+        ["ssh", host, "uname -s"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        timeout=REMOTE_PROBE_TIMEOUT_SECONDS,
+        check=False,
+    )
+    system = (completed.stdout or "").strip().lower()
+    if completed.returncode == 0 and system in POSIX_UNAME_SYSTEMS:
+        return POSIX_PEER
+    return WINDOWS_PEER
+
+
+def _posix_mkdir_command(remote_folder: str) -> str:
+    return f"mkdir -p -- {shlex.quote(remote_folder)}"
+
+
+def _posix_remove_staging_command(staging_path: str) -> str:
+    return f"rm -f -- {shlex.quote(staging_path)}"
+
+
+def _posix_verify_and_promote_command(
+    staging_path: str,
+    final_path: str,
+    *,
+    expected_size: int,
+    expected_sha256: str,
+) -> str:
+    sha256_of = (
+        'sha256_of() { if command -v sha256sum >/dev/null 2>&1; '
+        'then sha256sum -- "$1" | cut -d" " -f1; '
+        'else shasum -a 256 -- "$1" | cut -d" " -f1; fi; }'
+    )
+    lines = [
+        "set -eu",
+        f"stage={shlex.quote(staging_path)}",
+        f"final={shlex.quote(final_path)}",
+        f"expected_size={int(expected_size)}",
+        f"expected_hash={shlex.quote(expected_sha256.lower())}",
+        sha256_of,
+        '[ -f "$stage" ] || { echo "Staged model file is missing." >&2; exit 1; }',
+        'actual_size=$(wc -c < "$stage" | tr -d " ")',
+        (
+            '[ "$actual_size" = "$expected_size" ] || '
+            '{ echo "Staged model size mismatch: expected $expected_size, got $actual_size." >&2; exit 1; }'
+        ),
+        'actual_hash=$(sha256_of "$stage")',
+        (
+            '[ "$actual_hash" = "$expected_hash" ] || '
+            '{ echo "Staged model SHA-256 mismatch: got $actual_hash." >&2; exit 1; }'
+        ),
+        'if [ -e "$final" ]; then',
+        'final_size=$(wc -c < "$final" | tr -d " ")',
+        (
+            '[ "$final_size" = "$expected_size" ] || '
+            '{ echo "Final model file conflicts by size: expected $expected_size, got $final_size." >&2; exit 1; }'
+        ),
+        'final_hash=$(sha256_of "$final")',
+        (
+            '[ "$final_hash" = "$expected_hash" ] || '
+            '{ echo "Final model file conflicts by SHA-256: got $final_hash." >&2; exit 1; }'
+        ),
+        'rm -f -- "$stage"',
+        "exit 0",
+        "fi",
+        'mv -- "$stage" "$final"',
+    ]
+    return "\n".join(lines)
+
+
 def _new_staging_filename() -> str:
     return (
         f"{MODEL_TRANSFER_STAGING_PREFIX}{uuid.uuid4().hex}"
@@ -288,10 +371,15 @@ def _new_staging_filename() -> str:
     )
 
 
-def _remove_remote_staging_best_effort(host: str, staging_path: str) -> None:
+def _remove_remote_staging_best_effort(host: str, staging_path: str, shell: str) -> None:
+    command = (
+        _posix_remove_staging_command(staging_path)
+        if shell == POSIX_PEER
+        else _remote_remove_staging_command(staging_path)
+    )
     try:
         _run_uninterruptible_cleanup_command(
-            ["ssh", host, _remote_remove_staging_command(staging_path)],
+            ["ssh", host, command],
             description="Remote model staging cleanup",
         )
     except BaseException:
@@ -330,13 +418,31 @@ def copy_model_file_to_remote(
         if check_cancelled is not None
         else _source_integrity(source)
     )
+    shell = remote_shell_kind(host)
+    if shell == POSIX_PEER:
+        mkdir_command = _posix_mkdir_command(remote_folder_scp)
+        promote_command = _posix_verify_and_promote_command(
+            staging_path,
+            final_path,
+            expected_size=source_size,
+            expected_sha256=source_sha256,
+        )
+    else:
+        mkdir_command = _remote_mkdir_command(remote_folder_scp)
+        promote_command = _remote_verify_and_promote_command(
+            staging_path,
+            final_path,
+            expected_size=source_size,
+            expected_sha256=source_sha256,
+        )
 
     LOGGER.info(
         (
-            "[Cutlery Remote] Copying missing remote model host=%s model_type=%s "
+            "[Cutlery Remote] Copying missing remote model host=%s shell=%s model_type=%s "
             "filename=%s size=%s sha256=%s destination=%s"
         ),
         host,
+        shell,
         normalize_model_type(model_type),
         source.name,
         source_size,
@@ -351,7 +457,7 @@ def copy_model_file_to_remote(
     if process_finished is not None:
         command_callbacks["process_finished"] = process_finished
     _run_interruptible_command(
-        ["ssh", host, _remote_mkdir_command(remote_folder_scp)],
+        ["ssh", host, mkdir_command],
         description="Remote model folder creation",
         stream_to_console=True,
         **command_callbacks,
@@ -364,16 +470,7 @@ def copy_model_file_to_remote(
             **command_callbacks,
         )
         _run_interruptible_command(
-            [
-                "ssh",
-                host,
-                _remote_verify_and_promote_command(
-                    staging_path,
-                    final_path,
-                    expected_size=source_size,
-                    expected_sha256=source_sha256,
-                ),
-            ],
+            ["ssh", host, promote_command],
             description="Remote model integrity verification and promotion",
             stream_to_console=False,
             **command_callbacks,
@@ -381,7 +478,7 @@ def copy_model_file_to_remote(
         staging_may_exist = False
     except BaseException:
         if staging_may_exist:
-            _remove_remote_staging_best_effort(host, staging_path)
+            _remove_remote_staging_best_effort(host, staging_path, shell)
         raise
 
     return {
