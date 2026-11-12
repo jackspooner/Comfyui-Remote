@@ -280,6 +280,11 @@ For endpoint-level debugging, first read `GET /cutlery/features` on the receivin
 
 ## Two-peer release gate
 
+Before publishing `0.1.0`, build a wheel and check its exact allowlist, run the
+portable suite from a clean clone, run the opt-in two-peer gate below against
+configured test peers, and complete an independent security review. Passing the
+portable suite alone does not establish two-peer acceptance.
+
 `tests/test_two_peer_integration.py` is an explicit, read-only-by-default integration gate for two already-configured peers. It is skipped by the normal portable suite, so a release candidate must run it separately with values supplied by the release operator rather than copied from a peer's `.env` file:
 
 ```powershell
